@@ -1,34 +1,55 @@
 package ui
 
 import (
+	"sync"
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
+
+	r2theme "r2go/internal/theme"
 )
 
 type StatusBar struct {
-	Container *fyne.Container
-
-	msg     *widget.Label
-	right   *widget.Label
+	Container fyne.CanvasObject
+	message   *widget.Label
+	right     *widget.Label
+	mu        sync.Mutex
+	serial    uint64
+	timer     *time.Timer
 }
 
 func NewStatusBar() *StatusBar {
-	s := &StatusBar{}
-	s.msg = widget.NewLabel("Ready")
-	s.msg.Truncation = fyne.TextTruncateEllipsis
-	s.right = widget.NewLabel("")
-	s.right.Truncation = fyne.TextTruncateEllipsis
-	s.Container = container.NewBorder(nil, nil, nil, nil,
-		container.NewHBox(s.msg, layout.NewSpacer(), s.right))
-	return s
+	bar := &StatusBar{
+		message: mutedLabel("Ready"),
+		right:   mutedLabel(""),
+	}
+	row := container.NewBorder(nil, nil, bar.message, bar.right)
+	bar.Container = panel(r2theme.ColorToolbar, container.NewBorder(widget.NewSeparator(), nil, nil, nil, inset(7, 0, 7, 0, row)))
+	return bar
 }
 
-func (s *StatusBar) SetMessage(msg string) {
-	s.msg.SetText(msg)
+func (s *StatusBar) SetMessage(message string) {
+	s.message.SetText(message)
+	s.mu.Lock()
+	s.serial++
+	serial := s.serial
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	s.timer = time.AfterFunc(5*time.Second, func() {
+		s.mu.Lock()
+		current := s.serial
+		s.mu.Unlock()
+		if current != serial {
+			return
+		}
+		fyne.Do(func() { s.message.SetText("Ready") })
+	})
+	s.mu.Unlock()
 }
 
-func (s *StatusBar) SetRight(text string) {
-	s.right.SetText(text)
+func (s *StatusBar) SetRight(message string) {
+	s.right.SetText(message)
 }

@@ -1,101 +1,150 @@
 package ui
 
 import (
+	"fmt"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	fyneTheme "fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	r2theme "r2go/internal/theme"
 )
 
 type Toolbar struct {
-	mw        *MainWindow
-	Container *fyne.Container
-
-	breadcrumb *Breadcrumb
-	search     *widget.Entry
-	upload     *widget.Button
-	refresh    *widget.Button
-	multi      *widget.Button
-	themeBtn   *widget.Button
-	settings   *widget.Button
+	mw             *MainWindow
+	Container      fyne.CanvasObject
+	breadcrumb     *Breadcrumb
+	search         *widget.Entry
+	selectionLabel *widget.Label
+	publicURL      *widget.Button
+	upload         *widget.Button
+	newFolder      *widget.Button
+	normalActions  *fyne.Container
+	selectActions  *fyne.Container
 }
 
 func NewToolbar(mw *MainWindow) *Toolbar {
-	t := &Toolbar{mw: mw}
+	toolbar := &Toolbar{mw: mw}
+	toolbar.breadcrumb = NewBreadcrumb(func(prefix string) { mw.navigate(prefix) })
 
-	t.breadcrumb = NewBreadcrumb(func(prefix string) {
-		mw.onNavigatePrefix(prefix)
-	})
+	toolbar.search = widget.NewEntry()
+	toolbar.search.SetPlaceHolder("Filter files")
+	toolbar.search.SetIcon(fyneTheme.Icon(fyneTheme.IconNameSearch))
+	toolbar.search.OnChanged = func(value string) {
+		if mw.browser != nil {
+			mw.browser.SetFilter(value)
+		}
+	}
 
-	t.search = widget.NewEntry()
-	t.search.SetPlaceHolder("Search in current folder…")
-	t.search.OnChanged = func(text string) { mw.fileView.SetFilter(text) }
-	t.search.Disable()
-	searchBox := container.NewGridWrap(fyne.NewSize(280, 38), t.search)
+	toolbar.newFolder = widget.NewButtonWithIcon("New folder", fyneTheme.Icon(fyneTheme.IconNameContentAdd), mw.newFolder)
+	toolbar.newFolder.Importance = widget.LowImportance
+	toolbar.upload = widget.NewButtonWithIcon("Upload", fyneTheme.Icon(fyneTheme.IconNameUpload), mw.showUploadMenu)
+	toolbar.upload.Importance = widget.HighImportance
+	toolbar.normalActions = container.NewHBox(toolbar.newFolder, toolbar.upload)
 
-	t.upload = widget.NewButtonWithIcon("Upload", fyneTheme.Icon(fyneTheme.IconNameUpload), func() {
-		mw.onUploadClick()
-	})
-	t.upload.Disable()
-	t.refresh = widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameViewRefresh), func() {
-		mw.onRefresh()
-	})
-	t.refresh.Disable()
-	t.themeBtn = widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameColorChromatic), mw.toggleTheme)
-	t.multi = widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameList), func() {
-		mw.fileView.SetMulti(!mw.fileView.multi)
-		t.Refresh()
-	})
-	t.multi.Disable()
-	t.settings = widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameSettings), func() {
-		mw.showSettings()
-	})
+	toolbar.selectionLabel = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	toolbar.selectionLabel.SizeName = fyneTheme.SizeNameCaptionText
+	download := widget.NewButtonWithIcon("Download", fyneTheme.Icon(fyneTheme.IconNameDownload), mw.downloadSelected)
+	download.Importance = widget.LowImportance
+	copyButton := widget.NewButton("Copy to…", func() { mw.showCopyMoveDialog(mw.browser.SelectedEntries(), false) })
+	copyButton.Importance = widget.LowImportance
+	moveButton := widget.NewButton("Move to…", func() { mw.showCopyMoveDialog(mw.browser.SelectedEntries(), true) })
+	moveButton.Importance = widget.LowImportance
+	deleteButton := widget.NewButton("Delete", mw.deleteSelected)
+	deleteButton.Importance = widget.DangerImportance
+	toolbar.publicURL = widget.NewButton("Copy URL", mw.copySelectedPublicURL)
+	toolbar.publicURL.Importance = widget.LowImportance
+	toolbar.publicURL.Hide()
+	clear := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameContentClear), func() { mw.browser.ClearSelection() })
+	clear.Importance = widget.LowImportance
+	toolbar.selectActions = container.NewHBox(
+		toolbar.selectionLabel,
+		download,
+		copyButton,
+		moveButton,
+		toolbar.publicURL,
+		deleteButton,
+		fixedSize(28, 28, clear),
+	)
+	toolbar.selectActions.Hide()
 
-	t.Container = container.NewBorder(nil, nil, nil, nil,
-		container.NewHBox(
-			t.breadcrumb.Container,
-			layout.NewSpacer(),
-			t.upload,
-			t.refresh,
-			t.multi,
-			searchBox,
-			t.themeBtn,
-			t.settings,
-		))
-	return t
+	refresh := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameViewRefresh), mw.refresh)
+	refresh.Importance = widget.LowImportance
+	settings := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameSettings), mw.showSettings)
+	settings.Importance = widget.LowImportance
+
+	modeActions := container.NewStack(toolbar.normalActions, toolbar.selectActions)
+	right := container.NewHBox(
+		modeActions,
+		fixedSize(30, 30, refresh),
+		fixedSize(250, 32, toolbar.search),
+		fixedSize(30, 30, settings),
+	)
+	// Breadcrumb owns the flexible center. Keeping selection actions in this
+	// same row makes toolbar height invariant, so the table never slides under
+	// it when selection state changes.
+	topRow := container.NewBorder(nil, nil, nil, right, toolbar.breadcrumb.Container)
+	toolbar.Container = panel(r2theme.ColorToolbar, inset(8, 3, 8, 3, topRow))
+	toolbar.SetEnabled(false)
+	return toolbar
 }
 
 func (t *Toolbar) SetPath(bucket, prefix string) {
+	if bucket == "" {
+		t.breadcrumb.Clear()
+		return
+	}
 	t.breadcrumb.Set(bucket, prefix)
 }
 
-func (t *Toolbar) SetSearchText(text string) {
-	t.search.SetText(text)
+func (t *Toolbar) SetSearchText(value string) {
+	if t.search.Text != value {
+		t.search.SetText(value)
+	}
 }
 
-func (t *Toolbar) SetActionsEnabled(enabled bool) {
+func (t *Toolbar) SetSelection(count int) {
+	if count <= 0 {
+		t.selectActions.Hide()
+		t.normalActions.Show()
+		if t.Container != nil {
+			t.Container.Refresh()
+		}
+		return
+	}
+	t.selectionLabel.SetText(fmt.Sprintf("%d selected", count))
+	t.normalActions.Hide()
+	t.selectActions.Show()
+	if t.Container != nil {
+		t.Container.Refresh()
+	}
+}
+
+func (t *Toolbar) SetPublicAvailable(available bool) {
+	if available {
+		t.publicURL.Show()
+	} else {
+		t.publicURL.Hide()
+	}
+}
+
+func (t *Toolbar) SetEnabled(enabled bool) {
 	if enabled {
 		t.search.Enable()
 		t.upload.Enable()
-		t.refresh.Enable()
-		t.multi.Enable()
-	} else {
-		t.search.Disable()
-		t.upload.Disable()
-		t.refresh.Disable()
-		t.multi.Disable()
-	}
-}
-
-func (t *Toolbar) Refresh() {
-	if t.multi == nil {
+		t.newFolder.Enable()
 		return
 	}
-	if t.mw.fileView.multi {
-		t.multi.Importance = widget.HighImportance
-	} else {
-		t.multi.Importance = widget.LowImportance
+	t.search.Disable()
+	t.upload.Disable()
+	t.newFolder.Disable()
+	t.publicURL.Hide()
+}
+
+func (t *Toolbar) FocusSearch() {
+	if t.search.Disabled() {
+		return
 	}
-	t.multi.Refresh()
+	t.mw.win.Canvas().Focus(t.search)
 }

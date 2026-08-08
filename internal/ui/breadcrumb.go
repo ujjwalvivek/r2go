@@ -11,70 +11,42 @@ import (
 
 type Breadcrumb struct {
 	Container  *fyne.Container
-	onNavigate func(prefix string)
+	onNavigate func(string)
 }
 
-func NewBreadcrumb(onNavigate func(prefix string)) *Breadcrumb {
-	b := &Breadcrumb{onNavigate: onNavigate}
-	b.Container = container.NewHBox()
-	return b
+func NewBreadcrumb(onNavigate func(string)) *Breadcrumb {
+	return &Breadcrumb{Container: container.NewHBox(), onNavigate: onNavigate}
 }
 
 func (b *Breadcrumb) Set(bucket, prefix string) {
-	b.Container.Objects = nil
-	if bucket == "" {
-		b.Container.Add(widget.NewLabel("No bucket selected"))
-		b.Container.Refresh()
-		return
-	}
-
-	home := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameFolder), func() {
-		if b.onNavigate != nil {
-			b.onNavigate("")
-		}
+	objects := []fyne.CanvasObject{}
+	bucketTarget := ""
+	bucketButton := widget.NewButtonWithIcon(bucket, fyneTheme.Icon(fyneTheme.IconNameStorage), func() {
+		b.onNavigate(bucketTarget)
 	})
-	home.Importance = widget.LowImportance
-	b.Container.Add(home)
-	b.Container.Add(sepLabel())
+	bucketButton.Importance = widget.LowImportance
+	objects = append(objects, bucketButton)
 
-	bucketBtn := widget.NewButtonWithIcon(bucket, fyneTheme.Icon(fyneTheme.IconNameStorage), func() {
-		if b.onNavigate != nil {
-			b.onNavigate("")
-		}
-	})
-	bucketBtn.Importance = widget.LowImportance
-	b.Container.Add(bucketBtn)
-
-	if prefix == "" {
-		b.Container.Refresh()
-		return
-	}
-
-	segments := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
-	accum := ""
-	for i, seg := range segments {
-		accum += seg + "/"
-		sep := widget.NewLabel("›")
-		sep.Importance = widget.LowImportance
-		b.Container.Add(sep)
-		if i == len(segments)-1 {
-			cur := widget.NewLabelWithStyle(seg, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-			b.Container.Add(cur)
-		} else {
-			btn := widget.NewButton(seg, func() {
-				if b.onNavigate != nil {
-					b.onNavigate(accum)
-				}
-			})
-			btn.Importance = widget.LowImportance
-			b.Container.Add(btn)
+	if prefix != "" {
+		accumulated := ""
+		parts := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			objects = append(objects, mutedLabel("›"))
+			accumulated += part + "/"
+			target := accumulated
+			button := widget.NewButton(part, func() { b.onNavigate(target) })
+			button.Importance = widget.LowImportance
+			objects = append(objects, button)
 		}
 	}
+	b.Container.Objects = objects
 	b.Container.Refresh()
 }
 
-func sepLabel() *widget.Label {
-	l := widget.NewLabel("›")
-	l.Importance = widget.LowImportance
-	return l
+func (b *Breadcrumb) Clear() {
+	b.Container.Objects = nil
+	b.Container.Refresh()
 }
