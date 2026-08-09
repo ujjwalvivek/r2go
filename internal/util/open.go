@@ -5,15 +5,15 @@ import (
 	"runtime"
 )
 
-func Open(path string) error {
-	var cmd *exec.Cmd
+func Open(target string) error {
+	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
 	case "darwin":
-		cmd = exec.Command("open", path)
+		command = exec.Command("open", target)
 	default:
-		cmd = exec.Command("xdg-open", path)
+		command = exec.Command("xdg-open", target)
 	}
-	return cmd.Start()
+	return command.Start()
 }
