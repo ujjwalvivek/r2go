@@ -1,2 +1,25 @@
-r2go.exe
+# Build output
+/dist/
+/bin/
 *.exe
+*.app/
+*.dmg
+*.msi
+
+# Test / coverage
+*.test
+coverage.out
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local scratch
+*.log
+
+cmd/r2go/*.syso
