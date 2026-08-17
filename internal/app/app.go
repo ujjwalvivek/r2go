@@ -19,7 +19,7 @@ func Run() {
 	cfg, err := config.New()
 	if err != nil {
 		fyne.LogError("R2GO configuration", err)
-		window := application.NewWindow("R2GO — Startup error")
+		window := application.NewWindow("Startup error")
 		title := widget.NewLabelWithStyle("R2GO could not open its configuration", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 		detail := widget.NewLabel(err.Error())
 		detail.Wrapping = fyne.TextWrapWord

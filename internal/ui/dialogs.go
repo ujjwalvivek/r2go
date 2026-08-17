@@ -47,7 +47,7 @@ func (mw *MainWindow) showAccountDialog(existing *config.Account) {
 		accountID.SetPlaceHolder("Cloudflare Account ID")
 		accessKey.SetPlaceHolder("R2 Access Key ID")
 		secret.SetPlaceHolder("R2 Secret Access Key")
-		apiToken.SetPlaceHolder("Optional — for automatic CDN discovery")
+		apiToken.SetPlaceHolder("Optional, for automatic CDN discovery")
 	}
 
 	status := mutedLabel("")
@@ -74,7 +74,7 @@ func (mw *MainWindow) showAccountDialog(existing *config.Account) {
 					status.SetText("Connection failed: " + err.Error())
 					return
 				}
-				status.SetText(fmt.Sprintf("Connected — %d bucket%s found.", len(buckets), plural(len(buckets))))
+				status.SetText(fmt.Sprintf("Connected: %d bucket%s found.", len(buckets), plural(len(buckets))))
 			})
 		}()
 	})

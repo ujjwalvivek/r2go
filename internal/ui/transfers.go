@@ -230,7 +230,7 @@ func (p *TransferPanel) notifyIfFinished(group transferGroup) {
 	}
 	p.notified[group.id] = true
 	if group.failed > 0 {
-		p.mw.notify("Transfer needs attention", fmt.Sprintf("%s — %d file(s) failed", group.label, group.failed))
+		p.mw.notify("Transfer needs attention", fmt.Sprintf("%s - %d file(s) failed", group.label, group.failed))
 		return
 	}
 	if group.cancelled == len(group.items) {

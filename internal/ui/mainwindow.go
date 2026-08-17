@@ -52,7 +52,7 @@ type MainWindow struct {
 func NewMainWindow(app fyne.App, cfg *config.Manager, theme *r2theme.Theme) fyne.Window {
 	mw := &MainWindow{
 		app:       app,
-		win:       app.NewWindow("R2GO — Cloudflare R2 Explorer"),
+		win:       app.NewWindow("R2GO | Cloudflare R2 Explorer"),
 		cfg:       cfg,
 		theme:     theme,
 		cf:        cloudflare.New(),
@@ -96,7 +96,7 @@ func (mw *MainWindow) clientFor(accountName string) (*r2.Client, error) {
 
 	secret, ok := mw.cfg.S3Secret(accountName)
 	if !ok || secret == "" {
-		return nil, fmt.Errorf("no R2 secret stored for %q — edit the account and enter it again", accountName)
+		return nil, fmt.Errorf("no R2 secret stored for %q - edit the account and enter it again", accountName)
 	}
 	client := r2.New(account, secret)
 	mw.clientsMu.Lock()

@@ -133,8 +133,8 @@ func (b *Browser) updateRow(rowID int, object fyne.CanvasObject) {
 
 	if entry.IsDir && !entry.StatsKnown {
 		if entry.StatsError {
-			row.size.SetText("—")
-			row.modified.SetText("—")
+			row.size.SetText(">")
+			row.modified.SetText(">")
 		} else {
 			row.size.SetText("…")
 			row.modified.SetText("…")
@@ -144,7 +144,7 @@ func (b *Browser) updateRow(rowID int, object fyne.CanvasObject) {
 	} else {
 		row.size.SetText(formatSize(entry.Size))
 		if entry.Modified.IsZero() {
-			row.modified.SetText("—")
+			row.modified.SetText(">")
 			row.modified.Importance = widget.LowImportance
 		} else {
 			row.modified.SetText(entry.Modified.Local().Format("02 Jan 2006  15:04"))

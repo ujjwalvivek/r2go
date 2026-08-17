@@ -397,7 +397,7 @@ func (mw *MainWindow) copySelection(cut bool) {
 	if cut {
 		verb = "Cut"
 	}
-	mw.status.SetMessage(fmt.Sprintf("%s %d item%s — navigate and paste", verb, len(entries), plural(len(entries))))
+	mw.status.SetMessage(fmt.Sprintf("%s %d item%s - navigate and paste", verb, len(entries), plural(len(entries))))
 }
 
 func (mw *MainWindow) pasteClipboard() {
@@ -486,7 +486,7 @@ func (mw *MainWindow) runOperation(label string, session model.Session, operatio
 			}
 			lastUpdate = time.Now()
 			fyne.Do(func() {
-				mw.status.SetMessage(fmt.Sprintf("%s — %d/%d", label, done, total))
+				mw.status.SetMessage(fmt.Sprintf("%s - %d/%d", label, done, total))
 			})
 		})
 		fyne.Do(func() {
@@ -495,7 +495,7 @@ func (mw *MainWindow) runOperation(label string, session model.Session, operatio
 				mw.notify("R2 operation failed", label+": "+err.Error())
 				return
 			}
-			mw.status.SetMessage(label + " — done")
+			mw.status.SetMessage(label + " - done")
 			mw.notify("R2 operation complete", label)
 			if mw.currentSession().Account == session.Account && mw.currentSession().Bucket == session.Bucket {
 				mw.browser.Reload()
