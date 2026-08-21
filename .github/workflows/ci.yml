@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:
@@ -9,20 +11,43 @@ permissions:
 
 jobs:
   test:
+    name: Test and Build
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Fyne build dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc libgl1-mesa-dev xorg-dev
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
           cache: true
+
+      - name: Install Fyne build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            pkg-config \
+            libgl1-mesa-dev \
+            xorg-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev
+
+      - name: Download modules
+        run: go mod download
+
       - name: Format check
-        run: test -z "$(find cmd internal -name '*.go' -type f -print0 | xargs -0 gofmt -l)"
+        run: |
+          test -z "$(find cmd internal -name '*.go' -type f -print0 | xargs -0 gofmt -l)"
+
       - name: Test
         run: go test ./...
+
       - name: Vet
         run: go vet ./...
+
       - name: Build
         run: go build -trimpath ./cmd/r2go
