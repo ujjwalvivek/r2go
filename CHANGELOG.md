@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.0.0
+
+- Redesigned the whole UI experience.
+- Added an account overview dashboard, opened by clicking an account and shown at startup: totals, storage by bucket and by file type, recently changed and largest files.
+- Added a grid view with cached image previews (including SVG and ICO, up to 100 MB) and format-coloured icons and badges.
+- Added a details panel: preview, content type, ETag, metadata, public URL and quick actions.
+- Added `Ctrl+K` quick jump, `Ctrl+L` path editing, back/forward history, type-ahead and a `?` keyboard reference.
+- Added a folder browser to the copy and move dialogs.
+- Added retry for failed transfers, with ETA and speed per batch.
+- Failures now show as plain-words banners instead of modal error boxes.
+- The sidebar floats beside the content; the selection strip, transfers and status bar run the full window width.
+- Credential fields are masked, with a hold-to-reveal eye.
+- Native file and folder pickers replace Fyne's. This fixes crashes when uploading and when choosing a download folder.
+- Fixed `Ctrl+A/C/X/V` and the plain-key shortcuts (arrows, Enter, Delete, F2, F5), which never reached the app before.
+- Opted in to Fyne's `fyne.Do` threading model.
+- Removed the light theme.
+
 ## v1.1.0
 
 - Reworked the UI into a denser, edge-to-edge Windows 11-style layout.
