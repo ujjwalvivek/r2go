@@ -4,7 +4,6 @@ import (
 	"fyne.io/fyne/v2"
 	fyneapp "fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
-	fyneTheme "fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"r2go/internal/config"
@@ -15,6 +14,13 @@ import (
 const appID = "dev.r2go"
 
 func Run() {
+	// Every background goroutine hands UI work to fyne.Do, so opt in to
+	// Fyne's threading model instead of its compatibility safety net.
+	fyneapp.SetMetadata(fyne.AppMetadata{
+		ID:         appID,
+		Name:       "R2GO",
+		Migrations: map[string]bool{"fyneDo": true},
+	})
 	application := fyneapp.NewWithID(appID)
 	cfg, err := config.New()
 	if err != nil {
@@ -29,16 +35,11 @@ func Run() {
 		window.ShowAndRun()
 		return
 	}
-	variant := fyneTheme.VariantDark
-	if cfg.Settings().Theme == "light" {
-		variant = fyneTheme.VariantLight
-	}
-	theme := r2theme.New(variant)
-	application.Settings().SetTheme(theme)
+	application.Settings().SetTheme(r2theme.New())
 	icon := iconResource()
 	application.SetIcon(icon)
 
-	window := ui.NewMainWindow(application, cfg, theme)
+	window := ui.NewMainWindow(application, cfg, icon)
 	window.SetPadded(false)
 	window.SetIcon(icon)
 	window.Resize(fyne.NewSize(1360, 840))
