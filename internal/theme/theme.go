@@ -20,6 +20,7 @@ const (
 	ColorSelectionBar  fyne.ThemeColorName = "r2go.selectionBar"
 	ColorTransferTrack fyne.ThemeColorName = "r2go.transferTrack"
 	ColorBorder        fyne.ThemeColorName = "r2go.border"
+	ColorBorderStrong  fyne.ThemeColorName = "r2go.borderStrong"
 )
 
 type Theme struct {
@@ -60,18 +61,12 @@ func (t *Theme) Size(name fyne.ThemeSizeName) float32 {
 		return 15
 	case fyneTheme.SizeNameInlineIcon:
 		return 18
-	case fyneTheme.SizeNameInputRadius:
-		return 4
-	case fyneTheme.SizeNameSelectionRadius:
-		return 2
-	case fyneTheme.SizeNameButtonRadius:
-		return 4
-	case fyneTheme.SizeNameCardRadius:
-		return 5
-	case fyneTheme.SizeNameDialogRadius:
-		return 6
-	case fyneTheme.SizeNamePopupRadius, fyneTheme.SizeNameMenuRadius:
-		return 4
+	case fyneTheme.SizeNameInputRadius, fyneTheme.SizeNameSelectionRadius,
+		fyneTheme.SizeNameButtonRadius, fyneTheme.SizeNameCardRadius,
+		fyneTheme.SizeNameDialogRadius, fyneTheme.SizeNamePopupRadius,
+		fyneTheme.SizeNameMenuRadius, fyneTheme.SizeNameScrollBarRadius,
+		fyneTheme.SizeNameInnerWindowRadius:
+		return 0
 	case fyneTheme.SizeNameInputBorder:
 		return 1
 	case fyneTheme.SizeNameSeparatorThickness:
@@ -82,15 +77,21 @@ func (t *Theme) Size(name fyne.ThemeSizeName) float32 {
 		return 8
 	case fyneTheme.SizeNameScrollBarSmall:
 		return 4
-	case fyneTheme.SizeNameScrollBarRadius:
-		return 2
-	case fyneTheme.SizeNameInnerWindowRadius:
-		return 5
 	case fyneTheme.SizeNameModalBlurRadius:
 		return 2
 	}
 	return t.base.Size(name)
 }
+
+const (
+	SpaceGap   float32 = 8  // between blocks
+	SpacePageX float32 = 16 // page margins
+	SpacePageY float32 = 12
+	SpaceCardX float32 = 10 // card padding
+	SpaceCardY float32 = 8
+	SpaceRowX  float32 = 6 // list row padding
+	SpaceRowY  float32 = 3
+)
 
 func RGB(hex uint32) color.NRGBA {
 	return color.NRGBA{R: uint8(hex >> 16), G: uint8(hex >> 8), B: uint8(hex), A: 0xff}
@@ -137,6 +138,7 @@ var dark = map[fyne.ThemeColorName]color.Color{
 	ColorSelectionBar:                            RGB(0x080A0D),
 	ColorTransferTrack:                           RGB(0x151A20),
 	ColorBorder:                                  RGB(0x1A1F25),
+	ColorBorderStrong:                            RGB(0x2A3038),
 }
 
 var light = map[fyne.ThemeColorName]color.Color{
@@ -178,6 +180,7 @@ var light = map[fyne.ThemeColorName]color.Color{
 	ColorSelectionBar:                            RGB(0xF7F8FA),
 	ColorTransferTrack:                           RGB(0xE5E8ED),
 	ColorBorder:                                  RGB(0xDDE1E6),
+	ColorBorderStrong:                            RGB(0xCDD2D8),
 }
 
 func palette(variant fyne.ThemeVariant) map[fyne.ThemeColorName]color.Color {

@@ -85,7 +85,7 @@ func NewToolbar(mw *MainWindow) *Toolbar {
 	// same row makes toolbar height invariant, so the table never slides under
 	// it when selection state changes.
 	topRow := container.NewBorder(nil, nil, nil, right, toolbar.breadcrumb.Container)
-	toolbar.Container = panel(r2theme.ColorToolbar, inset(8, 3, 8, 3, topRow))
+	toolbar.Container = panel(r2theme.ColorToolbar, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, topRow))
 	toolbar.SetEnabled(false)
 	return toolbar
 }

@@ -138,7 +138,7 @@ func newHeaderCell(name string, alignment fyne.TextAlign, onTapped func()) *head
 	return cell
 }
 func (h *headerCell) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(container.NewStack(h.bg, inset(8, 0, 8, 0, h.label)))
+	return widget.NewSimpleRenderer(container.NewStack(h.bg, inset(r2theme.SpaceGap, 0, r2theme.SpaceGap, 0, h.label)))
 }
 func (h *headerCell) Refresh() {
 	h.bg.FillColor = fyneTheme.Color(r2theme.ColorTableHeader)
@@ -192,6 +192,9 @@ func newFileRow() *fileRow {
 	r.name.Truncation = fyne.TextTruncateEllipsis
 	r.size.Alignment = fyne.TextAlignTrailing
 	r.modified.Alignment = fyne.TextAlignLeading
+	// Sizes and dates are numbers, so they use the monospace face, as in echohub.
+	r.size.TextStyle = fyne.TextStyle{Monospace: true}
+	r.modified.TextStyle = fyne.TextStyle{Monospace: true}
 	r.ExtendBaseWidget(r)
 	return r
 }

@@ -43,7 +43,7 @@ func panel(colorName fyne.ThemeColorName, content fyne.CanvasObject) fyne.Canvas
 }
 
 func card(colorName fyne.ThemeColorName, content fyne.CanvasObject) fyne.CanvasObject {
-	return surface(colorName, 5, 6, content)
+	return surface(colorName, 0, 6, content)
 }
 
 func (s *themedSurface) CreateRenderer() fyne.WidgetRenderer {
@@ -154,8 +154,6 @@ func newMiniProgress() *miniProgress {
 		track: canvas.NewRectangle(fyneTheme.Color(r2theme.ColorTransferTrack)),
 		fill:  canvas.NewRectangle(fyneTheme.Color(fyneTheme.ColorNamePrimary)),
 	}
-	p.track.CornerRadius = 1
-	p.fill.CornerRadius = 1
 	p.ExtendBaseWidget(p)
 	return p
 }

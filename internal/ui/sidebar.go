@@ -201,7 +201,7 @@ func (r *sidebarBucketRow) MinSize() fyne.Size { return fyne.NewSize(210, 32) }
 func (r *sidebarBucketRow) CreateRenderer() fyne.WidgetRenderer {
 	r.accent.SetMinSize(fyne.NewSize(2, 1))
 	body := container.NewBorder(nil, nil, r.icon, nil, r.label)
-	content := container.NewBorder(nil, nil, r.accent, nil, inset(8, 0, 8, 0, body))
+	content := container.NewBorder(nil, nil, r.accent, nil, inset(r2theme.SpaceRowX, 0, r2theme.SpaceRowX, 0, body))
 	return widget.NewSimpleRenderer(container.NewStack(r.background, content))
 }
 

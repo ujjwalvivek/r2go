@@ -73,7 +73,7 @@ func NewBrowser(mw *MainWindow) *Browser {
 	browser.loadMore = widget.NewButton("Load more", browser.LoadMore)
 	browser.loadMore.Importance = widget.LowImportance
 	browser.loadMore.Hide()
-	browser.loadMoreBar = panel(r2theme.ColorSurface, inset(8, 3, 8, 3, container.NewCenter(browser.loadMore)))
+	browser.loadMoreBar = panel(r2theme.ColorSurface, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, container.NewCenter(browser.loadMore)))
 	browser.loadMoreBar.Hide()
 	browser.list = container.NewBorder(nil, browser.loadMoreBar, nil, nil, browser.table)
 
