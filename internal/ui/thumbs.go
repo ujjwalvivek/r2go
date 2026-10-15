@@ -160,14 +160,23 @@ func (c *thumbCache) load(ctx context.Context, client *r2.Client, session model.
 	waiters := item.waiters
 	item.waiters = nil
 	c.mu.Unlock()
-	if img == nil {
-		return
-	}
+	// Waiters hear about failures too (img is nil), so nothing waits forever.
 	fyne.Do(func() {
 		for _, waiter := range waiters {
 			waiter(img)
 		}
 	})
+}
+
+// Peek reports a finished preview without starting one: the image, or
+// failed when one could not be made (an animated WebP, say).
+func (c *thumbCache) Peek(session model.Session, entry model.Entry) (img image.Image, failed bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if item, ok := c.items[thumbKey(session, entry)]; ok && !item.loading {
+		return item.img, item.failed
+	}
+	return nil, false
 }
 
 func (c *thumbCache) path(key string) string { return filepath.Join(c.dir, key[:2], key+".png") }

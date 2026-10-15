@@ -358,7 +358,7 @@ func (mw *MainWindow) updateLocation() {
 		mw.win.SetTitle(mw.dashAccount + " | R2GO")
 		mw.status.SetSource(mw.dashAccount + " · overview")
 	case session.Bucket == "":
-		mw.toolbar.SetPath("", "")
+		mw.toolbar.SetIdle()
 		mw.win.SetTitle("R2GO")
 		mw.status.SetSource("")
 	default:

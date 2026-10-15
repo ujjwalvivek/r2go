@@ -86,8 +86,12 @@ func (d *Details) previewReady(entry model.Entry) {
 	if d.preview == nil || d.key != entry.Key {
 		return
 	}
-	if img := d.mw.thumbs.Get(nil, d.mw.currentSession(), entry, nil); img != nil {
+	img, failed := d.mw.thumbs.Peek(d.mw.currentSession(), entry)
+	switch {
+	case img != nil:
 		d.setPreview(img)
+	case failed && d.previewMsg != nil:
+		d.previewMsg.SetText("No preview for this file")
 	}
 }
 
@@ -310,6 +314,8 @@ func (d *Details) previewBox(session model.Session, entry model.Entry) fyne.Canv
 		d.preview.Image = img
 		d.preview.Show()
 		d.previewMsg.SetText("")
+	} else if _, failed := d.mw.thumbs.Peek(session, entry); failed {
+		d.previewMsg.SetText("No preview for this file")
 	}
 	return fixed(detailsInner, previewHeight, container.NewStack(frame, inset(1, 1, 1, 1, d.preview), d.previewMsg))
 }

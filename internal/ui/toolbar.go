@@ -116,6 +116,7 @@ func (tb *Toolbar) SetPath(bucket, prefix string) {
 	if !tb.browseTools.Visible() {
 		tb.browseTools.Show()
 		tb.upload.Show()
+		tb.reload.Show()
 		tb.reload.SetTip("Refresh  ·  F5\nList this folder again")
 		tb.right.Refresh()
 	}
@@ -127,8 +128,20 @@ func (tb *Toolbar) SetOverview(account string) {
 	tb.breadcrumb.SetOverview(account)
 	tb.upload.Hide()
 	tb.browseTools.Hide()
+	tb.reload.Show()
 	tb.reload.Enable()
 	tb.reload.SetTip("Count again  ·  F5\nList every object in this account's buckets again")
+	tb.right.Refresh()
+}
+
+// SetIdle clears the toolbar when nothing is open (no accounts yet), keeping
+// only Settings.
+func (tb *Toolbar) SetIdle() {
+	tb.stopEditing()
+	tb.breadcrumb.Set("", "")
+	tb.upload.Hide()
+	tb.browseTools.Hide()
+	tb.reload.Hide()
 	tb.right.Refresh()
 }
 
