@@ -357,3 +357,23 @@ func (m *Manager) cleanupGroupsLocked() {
 		}
 	}
 }
+
+// Retry queues a failed or cancelled transfer again from the start. It
+// reports whether the item was requeued.
+func (m *Manager) Retry(id string) bool {
+	m.mu.Lock()
+	item, ok := m.items[id]
+	if !ok || (item.State != Failed && item.State != Cancelled) {
+		m.mu.Unlock()
+		return false
+	}
+	item.ctx, item.cancel = context.WithCancel(context.Background())
+	item.State = Waiting
+	item.Err = nil
+	item.Completed = 0
+	item.StartedAt = time.Time{}
+	item.FinishedAt = time.Time{}
+	m.mu.Unlock()
+	m.queue <- item
+	return true
+}

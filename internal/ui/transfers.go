@@ -5,23 +5,36 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	fyneTheme "fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 
-	r2theme "r2go/internal/theme"
+	t "r2go/internal/theme"
 	"r2go/internal/transfer"
 )
 
+const (
+	transferTick      = 350 * time.Millisecond
+	transferLinger    = 6 * time.Second // finished groups stay this long
+	transferRowsShown = 5
+)
+
+// TransferPanel is the drawer above the status bar. It appears only while
+// transfers run or need attention. The header carries the totals and folds the
+// rows away; each row is one upload or download batch with a thin bar.
 type TransferPanel struct {
 	mw        *MainWindow
 	manager   *transfer.Manager
 	Container fyne.CanvasObject
-	root      *fyne.Container
-	content   *fyne.Container
-	count     *widget.Label
+	rows      *fyne.Container
+	summary   *textView
+	speed     *textView
+	overall   *meter
+	toggle    *button
+	clear     *button
+	collapsed bool
 	notified  map[string]bool
-	rows      int
+	rowCache  map[string]*transferRow
+	shown     int
 }
 
 type transferGroup struct {
@@ -37,73 +50,144 @@ type transferGroup struct {
 	cancelled int
 	active    int
 	lastDone  time.Time
+	firstErr  error
 }
 
 func NewTransferPanel(mw *MainWindow, manager *transfer.Manager) *TransferPanel {
-	panelView := &TransferPanel{mw: mw, manager: manager, content: tightVBox(), notified: map[string]bool{}}
-	title := widget.NewLabelWithStyle("Transfers", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	title.SizeName = fyneTheme.SizeNameCaptionText
-	panelView.count = mutedLabel("")
-	clear := widget.NewButton("Clear", manager.ClearFinished)
-	clear.Importance = widget.LowImportance
-	header := container.NewBorder(nil, nil, container.NewHBox(title, panelView.count), fixedSize(62, 28, clear))
-	header = container.NewBorder(widget.NewSeparator(), nil, nil, nil, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, header))
-	panelView.root = tightVBox(header, panelView.content)
-	panelView.Container = panel(r2theme.ColorToolbar, panelView.root)
-	panelView.Container.Hide()
+	p := &TransferPanel{
+		mw:       mw,
+		manager:  manager,
+		rows:     vbox(0),
+		summary:  newTextView("", t.TextSmall, t.ColorMuted, styleMono),
+		speed:    newTextView("", t.TextSmall, t.ColorMuted, styleMono),
+		overall:  newMeter(2, t.ColorAccent),
+		notified: map[string]bool{},
+		rowCache: map[string]*transferRow{},
+	}
+	p.toggle = newIconButton(t.IconChevronD, "Hide transfers", p.toggleCollapsed)
+	p.clear = newButton(buttonQuiet, "Clear finished", "", manager.ClearFinished)
+	title := newText("Transfers", t.TextSmall, t.ColorSubtle, styleStrong)
+	left := container.New(&rowLayout{gap: 10}, title, p.summary)
+	right := container.New(&rowLayout{gap: 8}, p.speed, fixed(80, 2, p.overall), p.clear, p.toggle)
+	header := newHoverArea(minHeight(t.HeightNavItem, inset(t.SpaceCardX, 0, 4, 0, container.NewBorder(nil, nil, left, right))), p.toggleCollapsed)
+	header.hoverFill = t.ColorPanel
+	body := vbox(0, hRule(t.ColorBorder), header, p.rows)
+	p.Container = panelBox(t.ColorPanel, body)
+	p.Container.Hide()
 
 	go func() {
-		ticker := time.NewTicker(350 * time.Millisecond)
+		ticker := time.NewTicker(transferTick)
 		defer ticker.Stop()
 		for range ticker.C {
-			manager.PruneSuccessful(6 * time.Second)
-			fyne.Do(panelView.refresh)
+			manager.PruneSuccessful(transferLinger)
+			fyne.Do(p.refresh)
 		}
 	}()
-	return panelView
+	return p
+}
+
+func (p *TransferPanel) toggleCollapsed() {
+	p.collapsed = !p.collapsed
+	if p.collapsed {
+		p.toggle.SetIcon(t.IconChevronU)
+		p.toggle.SetTip("Show transfers")
+	} else {
+		p.toggle.SetIcon(t.IconChevronD)
+		p.toggle.SetTip("Hide transfers")
+	}
+	p.refresh()
 }
 
 func (p *TransferPanel) refresh() {
 	groups := aggregateTransfers(p.manager.Snapshot())
-	p.mw.status.SetState(transferStatusState(groups))
+	state := transferStatusState(groups)
+	p.mw.setTransferState(state)
+
 	visible := make([]transferGroup, 0, len(groups))
+	var total, done int64
+	var speed float64
+	active, failed := 0, 0
 	for _, group := range groups {
-		if group.active > 0 || group.failed > 0 || (!group.lastDone.IsZero() && time.Since(group.lastDone) < 6*time.Second) {
-			visible = append(visible, group)
-		}
 		p.notifyIfFinished(group)
+		if group.active > 0 || group.failed > 0 || (!group.lastDone.IsZero() && time.Since(group.lastDone) < transferLinger) {
+			visible = append(visible, group)
+			total += group.total
+			done += group.done
+			if group.active > 0 {
+				speed += group.speed
+			}
+			active += group.active
+			failed += group.failed
+		}
+	}
+	live := make(map[string]struct{}, len(visible))
+	for _, group := range visible {
+		live[group.id] = struct{}{}
+	}
+	for id := range p.rowCache {
+		if _, ok := live[id]; !ok {
+			delete(p.rowCache, id)
+		}
 	}
 	if len(visible) == 0 {
-		wasVisible := p.Container.Visible()
-		p.Container.Hide()
-		p.content.Objects = nil
-		p.content.Refresh()
-		p.root.Refresh()
-		if wasVisible || p.rows != 0 {
-			p.rows = 0
-			p.mw.relayoutShell()
+		if p.Container.Visible() {
+			p.Container.Hide()
+			p.mw.relayout()
 		}
+		p.shown = 0
 		return
 	}
+
+	parts := []string{}
+	if active > 0 {
+		parts = append(parts, fmt.Sprintf("%s active", formatCount(active)))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%s failed", formatCount(failed)))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "done")
+	}
+	p.summary.SetText(joinDot(parts...))
+	if failed > 0 {
+		p.summary.SetColorName(t.ColorError)
+	} else {
+		p.summary.SetColorName(t.ColorMuted)
+	}
+	p.speed.SetText(formatSpeed(speed))
+	if total > 0 {
+		p.overall.SetValue(float64(done) / float64(total))
+	}
+	if active == 0 {
+		p.overall.SetValue(1)
+	}
+	if failed > 0 {
+		p.overall.SetFill(t.ColorError)
+	} else if active == 0 {
+		p.overall.SetFill(t.ColorSuccess)
+	} else {
+		p.overall.SetFill(t.ColorAccent)
+	}
+	p.clear.SetDisabled(len(visible) == active && failed == 0)
+
+	objects := []fyne.CanvasObject{}
+	if !p.collapsed {
+		for i := len(visible) - 1; i >= 0 && len(objects) < transferRowsShown; i-- {
+			objects = append(objects, p.row(visible[i]).Container)
+		}
+		if hidden := len(visible) - transferRowsShown; hidden > 0 {
+			objects = append(objects, inset(t.SpaceCardX, 3, t.SpaceCardX, 5,
+				newText(fmt.Sprintf("and %s more", countNoun(hidden, "batch")), t.TextSmall, t.ColorMuted, styleNormal)))
+		}
+	}
+	p.rows.Objects = objects
+	p.rows.Refresh()
+
 	wasVisible := p.Container.Visible()
 	p.Container.Show()
-	active := p.manager.ActiveCount()
-	if active > 0 {
-		p.count.SetText(fmt.Sprintf("· %d active", active))
-	} else {
-		p.count.SetText("")
-	}
-
-	objects := make([]fyne.CanvasObject, 0, len(visible))
-	for i := len(visible) - 1; i >= 0 && len(objects) < 3; i-- {
-		objects = append(objects, p.groupRow(visible[i]))
-	}
-	p.content.Objects = objects
-	p.content.Refresh()
-	p.root.Refresh()
-	if !wasVisible || p.rows != len(objects) {
-		p.rows = len(objects)
-		p.mw.relayoutShell()
+	if !wasVisible || p.shown != len(objects) {
+		p.shown = len(objects)
+		p.mw.relayout()
 	}
 }
 
@@ -144,6 +228,9 @@ func aggregateTransfers(items []transfer.Item) []transferGroup {
 		case transfer.Failed:
 			group.finished++
 			group.failed++
+			if group.firstErr == nil {
+				group.firstErr = item.Err
+			}
 		case transfer.Cancelled:
 			group.finished++
 			group.cancelled++
@@ -156,43 +243,102 @@ func aggregateTransfers(items []transfer.Item) []transferGroup {
 	return out
 }
 
-func (p *TransferPanel) groupRow(group transferGroup) fyne.CanvasObject {
-	label := widget.NewLabel(group.label)
-	label.Truncation = fyne.TextTruncateEllipsis
-	label.TextStyle = fyne.TextStyle{Bold: true}
-	status := mutedLabel(transferGroupStatus(group))
+// transferRow is one batch in the drawer. Rows are kept between ticks and
+// updated in place, so hover states and tooltips survive the refresh.
+type transferRow struct {
+	Container fyne.CanvasObject
+	icon      *canvas.Image
+	label     *textView
+	status    *textView
+	progress  *meter
+	actions   *fyne.Container
+	top       *fyne.Container
+	phase     string
+}
 
-	progress := newMiniProgress()
-	if group.total > 0 {
-		progress.SetValue(float64(group.done) / float64(group.total))
-	} else if group.active == 0 && group.failed == 0 {
-		progress.SetValue(1)
+func (p *TransferPanel) row(group transferGroup) *transferRow {
+	if row, ok := p.rowCache[group.id]; ok {
+		row.update(p, group)
+		return row
 	}
+	row := &transferRow{
+		icon:     newIcon(t.IconUpload, t.ColorAccent),
+		label:    newElided(group.label, t.TextBody, t.ColorText, styleNormal),
+		status:   newTextView("", t.TextSmall, t.ColorMuted, styleMono),
+		progress: newMeter(2, t.ColorAccent),
+		actions:  container.New(&rowLayout{gap: 2}),
+	}
+	row.top = container.NewBorder(nil, nil, nil, container.New(&rowLayout{gap: 10}, row.status, row.actions), row.label)
+	line := container.NewBorder(nil, nil, inset(0, 0, 8, 0, container.NewCenter(row.icon)), nil, vbox(3, minHeight(t.HeightControl, row.top), row.progress))
+	row.Container = inset(t.SpaceCardX, 0, 6, 6, line)
+	p.rowCache[group.id] = row
+	row.update(p, group)
+	return row
+}
 
-	var action fyne.CanvasObject
-	if group.active > 0 {
-		cancel := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameCancel), func() {
+func (r *transferRow) update(p *TransferPanel, group transferGroup) {
+	icon := t.IconUpload
+	if group.kind == transfer.Download {
+		icon = t.IconDownload
+	}
+	phase, colorName := "active", t.ColorAccent
+	switch {
+	case group.active > 0:
+	case group.failed > 0:
+		phase, colorName = "failed", t.ColorError
+	case group.cancelled == len(group.items):
+		phase, colorName = "cancelled", t.ColorMuted
+	default:
+		phase, colorName = "done", t.ColorSuccess
+	}
+	setIcon(r.icon, icon, colorName)
+	r.label.SetText(group.label)
+	r.status.SetText(transferGroupStatus(group))
+	if colorName == t.ColorMuted {
+		r.progress.SetFill(t.ColorBorderStrong)
+	} else {
+		r.progress.SetFill(colorName)
+	}
+	switch {
+	case group.total > 0:
+		r.progress.SetValue(float64(group.done) / float64(group.total))
+	case group.active == 0:
+		r.progress.SetValue(1)
+	}
+	if phase == r.phase && phase != "failed" {
+		r.top.Refresh()
+		return
+	}
+	r.phase = phase
+	var actions []fyne.CanvasObject
+	switch phase {
+	case "active":
+		actions = append(actions, newIconButton(t.IconClose, "Cancel\nStop the files that have not finished", func() {
 			for _, item := range group.items {
 				p.manager.Cancel(item.ID)
 			}
-		})
-		cancel.Importance = widget.LowImportance
-		action = fixedSize(26, 26, cancel)
-	} else if group.failed > 0 {
-		failed := widget.NewLabel(fmt.Sprintf("%d failed", group.failed))
-		failed.Importance = widget.DangerImportance
-		failed.SizeName = fyneTheme.SizeNameCaptionText
-		action = failed
-	} else {
-		done := widget.NewLabel("Done")
-		done.Importance = widget.SuccessImportance
-		done.SizeName = fyneTheme.SizeNameCaptionText
-		action = done
+		}))
+	case "failed":
+		e := explainError(group.firstErr)
+		why := newIconButton(t.IconAlert, fmt.Sprintf("%s\n%s\n%s", e.Title, e.Detail, e.Raw), nil)
+		ids := []string{}
+		for _, item := range group.items {
+			if item.State == transfer.Failed {
+				ids = append(ids, item.ID)
+			}
+		}
+		retry := newButton(buttonQuiet, "Retry", t.IconRefresh, func() {
+			for _, id := range ids {
+				p.manager.Retry(id)
+			}
+		}).withTip(fmt.Sprintf("Retry  ·  %s\nQueue the failed files again", countNoun(group.failed, "file")))
+		actions = append(actions, why, retry)
+	case "done":
+		actions = append(actions, container.NewCenter(newIcon(t.IconCheck, t.ColorSuccess)))
 	}
-
-	top := container.NewBorder(nil, nil, label, action)
-	body := tightVBox(top, status, progress)
-	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, body))
+	r.actions.Objects = actions
+	r.actions.Refresh()
+	r.top.Refresh()
 }
 
 // transferStatusState reports the status bar square. A failure outranks running
@@ -212,32 +358,33 @@ func transferStatusState(groups []transferGroup) StatusState {
 
 func transferGroupStatus(group transferGroup) string {
 	count := len(group.items)
-	completed := group.finished
-	parts := []string{fmt.Sprintf("%d/%d", completed, count)}
+	parts := []string{}
+	if count > 1 {
+		parts = append(parts, fmt.Sprintf("%s/%s", formatCount(group.finished), formatCount(count)))
+	}
 	if group.total > 0 {
-		parts = append(parts, fmt.Sprintf("%s / %s", formatSize(group.done), formatSize(group.total)))
+		if group.active > 0 {
+			parts = append(parts, fmt.Sprintf("%s of %s", formatSize(group.done), formatSize(group.total)))
+		} else {
+			parts = append(parts, formatSize(group.total))
+		}
 	}
 	if group.speed > 0 && group.active > 0 {
 		parts = append(parts, formatSpeed(group.speed))
+		if remaining := group.total - group.done; remaining > 0 {
+			parts = append(parts, formatDuration(time.Duration(float64(remaining)/group.speed*float64(time.Second)))+" left")
+		}
+	}
+	if group.failed > 0 {
+		parts = append(parts, fmt.Sprintf("%s failed", formatCount(group.failed)))
 	}
 	if group.cancelled > 0 {
-		parts = append(parts, fmt.Sprintf("%d cancelled", group.cancelled))
+		parts = append(parts, fmt.Sprintf("%s cancelled", formatCount(group.cancelled)))
 	}
-	return joinDot(parts)
-}
-
-func joinDot(values []string) string {
-	result := ""
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if result != "" {
-			result += "  ·  "
-		}
-		result += value
+	if group.active == 0 && group.failed == 0 && group.cancelled == 0 {
+		parts = append(parts, "done")
 	}
-	return result
+	return joinDot(parts...)
 }
 
 func (p *TransferPanel) notifyIfFinished(group transferGroup) {
@@ -246,11 +393,14 @@ func (p *TransferPanel) notifyIfFinished(group transferGroup) {
 	}
 	p.notified[group.id] = true
 	if group.failed > 0 {
-		p.mw.notify("Transfer needs attention", fmt.Sprintf("%s - %d file(s) failed", group.label, group.failed))
+		p.mw.notify("Transfer needs attention", fmt.Sprintf("%s: %s failed", group.label, countNoun(group.failed, "file")))
 		return
 	}
 	if group.cancelled == len(group.items) {
 		return
 	}
 	p.mw.notify("Transfer complete", group.label)
+	if group.kind == transfer.Upload {
+		p.mw.uploadsFinished(group.items)
+	}
 }

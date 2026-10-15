@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/99designs/keyring"
 )
@@ -33,6 +34,21 @@ func OpenSecrets(dir string) (*Secrets, error) {
 		s.ring = ring
 	}
 	return s, nil
+}
+
+// Location says where secrets are kept: the OS keyring, or the fallback file.
+func (s *Secrets) Location() string {
+	if s.ring != nil {
+		switch runtime.GOOS {
+		case "windows":
+			return "Windows Credential Manager"
+		case "darwin":
+			return "macOS Keychain"
+		default:
+			return "system keyring"
+		}
+	}
+	return s.fallback
 }
 
 func s3Key(name string) string       { return "account:" + name + ":s3-secret" }

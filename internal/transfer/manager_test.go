@@ -117,3 +117,30 @@ func TestCancelRunningTransfer(t *testing.T) {
 		t.Fatal("cancelled transfer should retain a cancellation error")
 	}
 }
+
+func TestRetryCancelledTransferRunsAgain(t *testing.T) {
+	client := &fakeFileClient{release: make(chan struct{})}
+	manager := New(1)
+	id := manager.AddUpload(client, "account", "bucket", "hold", "/tmp/hold", "", "")
+	waitForState(t, manager, id, Running)
+	manager.Cancel(id)
+	waitForState(t, manager, id, Cancelled)
+
+	if manager.Retry("missing") {
+		t.Fatal("Retry of an unknown id reported success")
+	}
+	close(client.release)
+	if !manager.Retry(id) {
+		t.Fatal("Retry of a cancelled transfer was refused")
+	}
+	item := waitForState(t, manager, id, Done)
+	if item.Err != nil || item.Completed != item.Total {
+		t.Fatalf("retried transfer finished as %+v", item)
+	}
+	if calls := client.calls(); len(calls) != 2 {
+		t.Fatalf("expected the client to be called twice, got %v", calls)
+	}
+	if manager.Retry(id) {
+		t.Fatal("Retry of a finished transfer should be refused")
+	}
+}

@@ -12,10 +12,7 @@ import (
 	"sync"
 )
 
-const (
-	configFileName = "config.json"
-	defaultTheme   = "dark"
-)
+const configFileName = "config.json"
 
 type Account struct {
 	Name          string            `json:"name"`
@@ -26,8 +23,13 @@ type Account struct {
 }
 
 type Settings struct {
-	Theme       string `json:"theme"`
 	DownloadDir string `json:"download_dir"`
+	// View is "list" or "grid".
+	View string `json:"view,omitempty"`
+	// HideDetails hides the details panel; it is shown by default.
+	HideDetails bool `json:"hide_details,omitempty"`
+	// NoThumbnails stops image previews from being downloaded.
+	NoThumbnails bool `json:"no_thumbnails,omitempty"`
 }
 
 type diskFile struct {
@@ -64,7 +66,6 @@ func New() (*Manager, error) {
 		data: diskFile{
 			Version: 2,
 			Settings: Settings{
-				Theme:       defaultTheme,
 				DownloadDir: defaultDownloadDir(),
 			},
 		},
@@ -90,9 +91,6 @@ func (m *Manager) load() error {
 		return fmt.Errorf("parse %s: %w", m.path, err)
 	}
 	m.data.Version = 2
-	if m.data.Settings.Theme == "" {
-		m.data.Settings.Theme = defaultTheme
-	}
 	if m.data.Settings.DownloadDir == "" {
 		m.data.Settings.DownloadDir = defaultDownloadDir()
 	}
@@ -121,6 +119,12 @@ func (m *Manager) Save() error {
 	return os.Rename(tmp, path)
 }
 
+// Dir is the folder holding config.json.
+func (m *Manager) Dir() string { return filepath.Dir(m.path) }
+
+// SecretsLocation says where credentials are stored, for display.
+func (m *Manager) SecretsLocation() string { return m.sec.Location() }
+
 func (m *Manager) Settings() Settings {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -128,9 +132,6 @@ func (m *Manager) Settings() Settings {
 }
 
 func (m *Manager) UpdateSettings(settings Settings) error {
-	if settings.Theme == "" {
-		settings.Theme = defaultTheme
-	}
 	if settings.DownloadDir == "" {
 		settings.DownloadDir = defaultDownloadDir()
 	}

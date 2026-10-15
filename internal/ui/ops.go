@@ -10,64 +10,46 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	fyneTheme "fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 
 	"r2go/internal/explorer"
 	"r2go/internal/model"
+	t "r2go/internal/theme"
+	"r2go/internal/transfer"
 	"r2go/internal/util"
 )
 
-func (mw *MainWindow) showUploadMenu() {
+// ---------------------------------------------------------------- upload
+
+func (mw *MainWindow) showUploadMenu(pos fyne.Position) {
 	if mw.currentSession().Bucket == "" {
 		return
 	}
-	var popup *dialog.CustomDialog
-	fileButton := widget.NewButtonWithIcon("Choose a file", fyneTheme.Icon(fyneTheme.IconNameFile), func() {
-		popup.Hide()
-		picker := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-			if err != nil || reader == nil {
-				return
-			}
-			path := reader.URI().Path()
-			_ = reader.Close()
-			mw.enqueueUploadPaths([]string{path})
-		}, mw.win)
-		picker.SetView(dialog.ListView)
-		picker.SetTitleText("Select file to upload")
-		picker.Resize(fyne.NewSize(760, 520))
-		picker.Show()
-	})
-	fileButton.Importance = widget.HighImportance
-	folderButton := widget.NewButtonWithIcon("Choose a folder", fyneTheme.Icon(fyneTheme.IconNameFolderOpen), func() {
-		popup.Hide()
-		picker := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
-			if err != nil || uri == nil {
-				return
-			}
-			mw.enqueueUploadPaths([]string{uri.Path()})
-		}, mw.win)
-		picker.SetView(dialog.ListView)
-		picker.SetTitleText("Select folder to upload")
-		picker.Resize(fyne.NewSize(760, 520))
-		picker.Show()
-	})
-	folderButton.Importance = widget.MediumImportance
-	content := container.NewVBox(
-		widget.NewLabelWithStyle("Upload to "+mw.currentSession().Bucket, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		mutedLabel("Drag and drop also supports multiple files and folders."),
-		fileButton,
-		folderButton,
+	showMenu(mw.win, pos,
+		menuItem{label: "Upload files…", icon: t.IconFile, action: mw.pickUploadFile},
+		menuItem{label: "Upload a folder…", icon: t.IconFolder, action: mw.pickUploadFolder},
 	)
-	popup = dialog.NewCustom("Upload", "Cancel", inset(4, 2, 4, 0, content), mw.win)
-	popup.Resize(fyne.NewSize(420, 200))
-	popup.Show()
+}
+
+// showUploadMenuAtToolbar opens the upload menu under the toolbar's button,
+// for the keyboard shortcut.
+func (mw *MainWindow) showUploadMenuAtToolbar() {
+	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(mw.toolbar.upload)
+	mw.showUploadMenu(pos.Add(fyne.NewPos(0, mw.toolbar.upload.Size().Height+2)))
+}
+
+func (mw *MainWindow) pickUploadFile() {
+	mw.pickLocal(false, "Upload files to "+mw.locationLabel(), "", mw.enqueueUploadPaths)
+}
+
+func (mw *MainWindow) pickUploadFolder() {
+	mw.pickLocal(true, "Upload a folder to "+mw.locationLabel(), "", mw.enqueueUploadPaths)
 }
 
 func (mw *MainWindow) handleDrop(uris []fyne.URI) {
 	if mw.currentSession().Bucket == "" || len(uris) == 0 {
+		if len(uris) > 0 {
+			mw.status.SetMessage("Open a bucket first, then drop files to upload them")
+		}
 		return
 	}
 	paths := make([]string, 0, len(uris))
@@ -84,7 +66,7 @@ func (mw *MainWindow) enqueueUploadPaths(paths []string) {
 	session := mw.currentSession()
 	client, err := mw.clientFor(session.Account)
 	if err != nil {
-		mw.showError("Upload", err)
+		mw.reportError("Could not upload", err)
 		return
 	}
 	if len(paths) == 0 {
@@ -92,9 +74,9 @@ func (mw *MainWindow) enqueueUploadPaths(paths []string) {
 	}
 
 	groupID := mw.transfers.NewGroup("upload")
-	label := fmt.Sprintf("Uploading %d item%s", len(paths), plural(len(paths)))
+	label := fmt.Sprintf("Uploading %s to %s", countNoun(len(paths), "item"), mw.locationLabel())
 	if len(paths) == 1 {
-		label = "Uploading " + filepath.Base(paths[0])
+		label = fmt.Sprintf("Uploading %s to %s", filepath.Base(paths[0]), mw.locationLabel())
 	}
 	mw.status.SetMessage("Preparing upload…")
 
@@ -161,14 +143,14 @@ func (mw *MainWindow) enqueueUploadPaths(paths []string) {
 		fyne.Do(func() {
 			switch {
 			case firstErr != nil && queued == 0 && emptyFolders == 0:
-				mw.showError("Upload", firstErr)
+				mw.reportError("Could not upload", firstErr)
 			case firstErr != nil:
-				mw.status.SetMessage(fmt.Sprintf("Queued %d upload%s; some items could not be prepared", queued, plural(queued)))
-				mw.notify("Upload preparation warning", firstErr.Error())
+				mw.status.SetMessage(fmt.Sprintf("Queued %s; some items could not be read", countNoun(queued, "upload")))
+				mw.reportWarning("Some items were skipped", firstErr)
 			case queued > 0:
-				mw.status.SetMessage(fmt.Sprintf("Queued %d upload%s", queued, plural(queued)))
+				mw.status.SetMessage(fmt.Sprintf("Queued %s", countNoun(queued, "upload")))
 			case emptyFolders > 0:
-				mw.status.SetMessage(fmt.Sprintf("Created %d empty folder%s", emptyFolders, plural(emptyFolders)))
+				mw.status.SetMessage(fmt.Sprintf("Created %s", countNoun(emptyFolders, "empty folder")))
 				if mw.currentSession() == session {
 					mw.browser.Reload()
 				}
@@ -178,6 +160,20 @@ func (mw *MainWindow) enqueueUploadPaths(paths []string) {
 		})
 	}()
 }
+
+// uploadsFinished reloads the listing when finished uploads landed in the
+// folder on screen.
+func (mw *MainWindow) uploadsFinished(items []transfer.Item) {
+	session := mw.currentSession()
+	for _, item := range items {
+		if item.Account == session.Account && item.Bucket == session.Bucket && strings.HasPrefix(item.Key, session.Prefix) {
+			mw.browser.Reload()
+			return
+		}
+	}
+}
+
+// ---------------------------------------------------------------- download
 
 func (mw *MainWindow) downloadSelected() {
 	entries := mw.browser.SelectedEntries()
@@ -191,12 +187,12 @@ func (mw *MainWindow) downloadEntries(entries []model.Entry) {
 	session := mw.currentSession()
 	client, err := mw.clientFor(session.Account)
 	if err != nil {
-		mw.showError("Download", err)
+		mw.reportError("Could not download", err)
 		return
 	}
 	settings := mw.cfg.Settings()
 	groupID := mw.transfers.NewGroup("download")
-	label := fmt.Sprintf("Downloading %d item%s", len(entries), plural(len(entries)))
+	label := fmt.Sprintf("Downloading %s", countNoun(len(entries), "item"))
 	if len(entries) == 1 {
 		label = "Downloading " + entries[0].Name
 	}
@@ -216,12 +212,12 @@ func (mw *MainWindow) downloadEntries(entries []model.Entry) {
 			objects, err := client.ListAll(ctx, session.Bucket, entry.Key)
 			cancel()
 			if err != nil {
-				fyne.Do(func() { mw.showError("Download folder", err) })
+				fyne.Do(func() { mw.reportError("Could not download "+entry.Name, err) })
 				return
 			}
 			root := mw.reserveLocalPath(filepath.Join(settings.DownloadDir, entry.Name), true)
 			if err := os.MkdirAll(root, 0o755); err != nil {
-				fyne.Do(func() { mw.showError("Download folder", err) })
+				fyne.Do(func() { mw.reportError("Could not download "+entry.Name, err) })
 				return
 			}
 			createdFolders++
@@ -238,9 +234,9 @@ func (mw *MainWindow) downloadEntries(entries []model.Entry) {
 		fyne.Do(func() {
 			switch {
 			case queued > 0:
-				mw.status.SetMessage(fmt.Sprintf("Queued %d download%s", queued, plural(queued)))
+				mw.status.SetMessage(fmt.Sprintf("Downloading %s to %s", countNoun(queued, "file"), settings.DownloadDir))
 			case createdFolders > 0:
-				mw.status.SetMessage(fmt.Sprintf("Created %d local folder%s", createdFolders, plural(createdFolders)))
+				mw.status.SetMessage(fmt.Sprintf("Created %s", countNoun(createdFolders, "local folder")))
 			default:
 				mw.status.SetMessage("Nothing to download")
 			}
@@ -285,44 +281,69 @@ func (mw *MainWindow) reserveLocalPath(target string, directory bool) string {
 	}
 }
 
+// ---------------------------------------------------------------- folders, rename, delete
+
+// validName checks a single file or folder name typed by the user.
+func validName(existing []model.Entry, current string) func(string) string {
+	return func(value string) string {
+		switch {
+		case value == "":
+			return "Enter a name."
+		case strings.ContainsAny(value, "/\\"):
+			return "A name cannot contain / or \\."
+		case value == "." || value == "..":
+			return "That name is reserved."
+		}
+		if value == current {
+			return ""
+		}
+		for _, entry := range existing {
+			if strings.EqualFold(entry.Name, value) {
+				return "Something with that name is already here."
+			}
+		}
+		return ""
+	}
+}
+
 func (mw *MainWindow) newFolder() {
 	session := mw.currentSession()
 	if session.Bucket == "" {
 		return
 	}
-	name := widget.NewEntry()
-	name.SetPlaceHolder("Folder name")
-	confirm := dialog.NewCustomConfirm("New folder", "Create", "Cancel", inset(4, 2, 4, 0, name), func(ok bool) {
-		if !ok {
-			return
-		}
-		value := strings.TrimSpace(name.Text)
-		if value == "" || strings.ContainsAny(value, "/\\") {
-			mw.showError("Create folder", fmt.Errorf("enter a single folder name"))
-			return
-		}
-		client, err := mw.clientFor(session.Account)
-		if err != nil {
-			mw.showError("Create folder", err)
-			return
-		}
-		key := model.JoinPrefix(session.Prefix, value, true)
-		go func() {
-			err := client.CreateFolder(context.Background(), session.Bucket, key)
-			fyne.Do(func() {
-				if err != nil {
-					mw.showError("Create folder", err)
-					return
-				}
-				mw.status.SetMessage("Created " + value)
-				if mw.currentSession() == session {
-					mw.browser.Reload()
-				}
-			})
-		}()
-	}, mw.win)
-	confirm.Resize(fyne.NewSize(420, 150))
-	confirm.Show()
+	mw.prompt(promptSpec{
+		title:       "New folder",
+		caption:     "Folder name",
+		placeholder: "e.g. images",
+		hint:        "Created in " + mw.locationLabel() + ". R2 has no real folders, so r2go stores an empty marker object.",
+		confirmText: "Create",
+		validate:    validName(mw.browser.all, ""),
+		onConfirm: func(value string) {
+			client, err := mw.clientFor(session.Account)
+			if err != nil {
+				mw.reportError("Could not create the folder", err)
+				return
+			}
+			key := model.JoinPrefix(session.Prefix, value, true)
+			mw.progress.Begin()
+			go func() {
+				err := client.CreateFolder(context.Background(), session.Bucket, key)
+				fyne.Do(func() {
+					mw.progress.End()
+					if err != nil {
+						mw.reportError("Could not create the folder", err)
+						return
+					}
+					mw.status.SetMessage("Created " + value)
+					if mw.currentSession() == session {
+						mw.browser.selected = map[string]struct{}{key: {}}
+						mw.browser.focusKey = key
+						mw.browser.Reload()
+					}
+				})
+			}()
+		},
+	})
 }
 
 func (mw *MainWindow) renameSelected() {
@@ -330,32 +351,35 @@ func (mw *MainWindow) renameSelected() {
 	if !ok {
 		return
 	}
-	name := widget.NewEntry()
-	name.SetText(entry.Name)
-	confirm := dialog.NewCustomConfirm("Rename", "Rename", "Cancel", inset(4, 2, 4, 0, name), func(ok bool) {
-		if !ok {
-			return
-		}
-		newName := strings.TrimSpace(name.Text)
-		if newName == entry.Name {
-			return
-		}
-		if newName == "" || strings.ContainsAny(newName, "/\\") {
-			mw.showError("Rename", fmt.Errorf("enter a single file or folder name"))
-			return
-		}
-		session := mw.currentSession()
-		client, err := mw.clientFor(session.Account)
-		if err != nil {
-			mw.showError("Rename", err)
-			return
-		}
-		mw.runOperation("Renaming "+entry.Name, session, func(ctx context.Context, progress explorer.Progress) error {
-			return explorer.Rename(ctx, client, session.Bucket, entry, newName, progress)
-		})
-	}, mw.win)
-	confirm.Resize(fyne.NewSize(420, 150))
-	confirm.Show()
+	caption := "New name"
+	hint := ""
+	if entry.IsDir {
+		hint = "Renaming a folder copies every object inside it to the new name, then deletes the old ones."
+	}
+	mw.prompt(promptSpec{
+		title:       "Rename " + entry.Name,
+		caption:     caption,
+		value:       entry.Name,
+		hint:        hint,
+		confirmText: "Rename",
+		selectStem:  !entry.IsDir,
+		validate:    validName(mw.browser.all, entry.Name),
+		onConfirm: func(newName string) {
+			if newName == entry.Name {
+				return
+			}
+			session := mw.currentSession()
+			client, err := mw.clientFor(session.Account)
+			if err != nil {
+				mw.reportError("Could not rename", err)
+				return
+			}
+			newKey := model.JoinPrefix(session.Prefix, newName, entry.IsDir)
+			mw.runOperation("Renaming "+entry.Name, session, newKey, func(ctx context.Context, progress explorer.Progress) error {
+				return explorer.Rename(ctx, client, session.Bucket, entry, newName, progress)
+			})
+		},
+	})
 }
 
 func (mw *MainWindow) deleteSelected() {
@@ -363,25 +387,60 @@ func (mw *MainWindow) deleteSelected() {
 	if len(entries) == 0 {
 		return
 	}
-	label := entries[0].Name
-	if len(entries) > 1 {
-		label = fmt.Sprintf("%d selected items", len(entries))
+	files, folders := 0, 0
+	var size int64
+	pending := false
+	for _, entry := range entries {
+		if entry.IsDir {
+			folders++
+			pending = pending || !entry.StatsKnown
+		} else {
+			files++
+		}
+		size += entry.Size
 	}
-	dialog.ShowConfirm("Delete permanently", "Delete "+label+" from R2? This cannot be undone.", func(ok bool) {
-		if !ok {
-			return
-		}
-		session := mw.currentSession()
-		client, err := mw.clientFor(session.Account)
-		if err != nil {
-			mw.showError("Delete", err)
-			return
-		}
-		mw.runOperation("Deleting "+label, session, func(ctx context.Context, progress explorer.Progress) error {
-			return explorer.Delete(ctx, client, session.Bucket, entries, progress)
-		})
-	}, mw.win)
+	sizeText := formatSize(size)
+	if pending {
+		sizeText = "at least " + sizeText
+	}
+	title := "Delete " + entries[0].Name + "?"
+	if len(entries) > 1 {
+		title = fmt.Sprintf("Delete %s?", countNoun(len(entries), "item"))
+	}
+	parts := []string{}
+	if files > 0 {
+		parts = append(parts, countNoun(files, "file"))
+	}
+	if folders > 0 {
+		parts = append(parts, countNoun(folders, "folder")+" and everything inside")
+	}
+	summary := newText(joinDot(strings.Join(parts, ", "), sizeText), t.TextSmall, t.ColorSubtle, styleMono)
+	mw.confirm(confirmSpec{
+		title:       title,
+		message:     "This permanently removes them from " + mw.locationLabel() + ". R2 has no recycle bin, so this cannot be undone.",
+		detail:      summary,
+		confirmText: "Delete",
+		danger:      true,
+		onConfirm: func() {
+			session := mw.currentSession()
+			client, err := mw.clientFor(session.Account)
+			if err != nil {
+				mw.reportError("Could not delete", err)
+				return
+			}
+			label := "Deleting " + entries[0].Name
+			if len(entries) > 1 {
+				label = "Deleting " + countNoun(len(entries), "item")
+			}
+			mw.browser.ClearSelection()
+			mw.runOperation(label, session, "", func(ctx context.Context, progress explorer.Progress) error {
+				return explorer.Delete(ctx, client, session.Bucket, entries, progress)
+			})
+		},
+	})
 }
+
+// ---------------------------------------------------------------- copy and move
 
 func (mw *MainWindow) copySelection(cut bool) {
 	entries := mw.browser.SelectedEntries()
@@ -397,7 +456,7 @@ func (mw *MainWindow) copySelection(cut bool) {
 	if cut {
 		verb = "Cut"
 	}
-	mw.status.SetMessage(fmt.Sprintf("%s %d item%s - navigate and paste", verb, len(entries), plural(len(entries))))
+	mw.status.SetMessage(fmt.Sprintf("%s %s · open a folder and press Ctrl+V to paste", verb, countNoun(len(entries), "item")))
 }
 
 func (mw *MainWindow) pasteClipboard() {
@@ -407,7 +466,7 @@ func (mw *MainWindow) pasteClipboard() {
 		return
 	}
 	if clip.session.Account != destination.Account || clip.session.Bucket != destination.Bucket {
-		mw.showError("Paste", fmt.Errorf("copy/move currently works within the same R2 bucket"))
+		mw.status.SetMessage("Paste works within one bucket. Go back to " + clip.session.Bucket + " to paste there.")
 		return
 	}
 	mw.runCopyMove(clip.entries, clip.session, destination.Prefix, clip.cut, explorer.SkipExisting)
@@ -420,44 +479,49 @@ func (mw *MainWindow) showCopyMoveDialog(entries []model.Entry, move bool) {
 	if len(entries) == 0 {
 		return
 	}
-	destination := widget.NewEntry()
-	destination.SetText(mw.currentSession().Prefix)
-	destination.SetPlaceHolder("folder/subfolder/  (blank = bucket root)")
-	replace := widget.NewCheck("Replace objects that already exist", nil)
-	content := container.NewVBox(
-		mutedLabel("Destination prefix inside this bucket"),
-		destination,
-		replace,
-		mutedLabel("By default existing objects are skipped; sources are never deleted when a move is skipped."),
-	)
-	title := "Copy to…"
-	confirmText := "Copy"
-	if move {
-		title = "Move to…"
-		confirmText = "Move"
-	}
 	source := mw.currentSession()
-	confirm := dialog.NewCustomConfirm(title, confirmText, "Cancel", inset(4, 2, 4, 0, content), func(ok bool) {
-		if !ok {
-			return
-		}
-		policy := explorer.SkipExisting
-		if replace.Checked {
-			policy = explorer.ReplaceExisting
-		}
-		mw.runCopyMove(entries, source, destination.Text, move, policy)
-	}, mw.win)
-	confirm.Resize(fyne.NewSize(540, 250))
-	confirm.Show()
+	picker := newFolderPicker(mw, source, source.Prefix, entries)
+	replace := newCheckbox("Replace objects that already exist there", false, nil)
+	title := "Copy"
+	if move {
+		title = "Move"
+	}
+	what := entries[0].Name
+	if len(entries) > 1 {
+		what = countNoun(len(entries), "item")
+	}
+	body := vbox(10,
+		labelled("Destination in "+source.Bucket, picker.Container,
+			"Open a folder below, or type a path. Folders that do not exist yet are created."),
+		replace,
+		wrappedHint("Without this, objects that already exist are skipped. When a move skips an object, its original is kept."),
+	)
+	m := showModal(mw.win, modalSpec{
+		title:       title + " " + what,
+		width:       520,
+		body:        body,
+		confirmText: title + " here",
+		onConfirm: func() bool {
+			policy := explorer.SkipExisting
+			if replace.Checked {
+				policy = explorer.ReplaceExisting
+			}
+			mw.runCopyMove(entries, source, picker.Value(), move, policy)
+			return true
+		},
+		focus: picker.Path,
+	})
+	picker.Path.OnSubmitted = func(string) { m.Confirm() }
+	picker.Path.onEscape = m.Cancel
 }
 
 func (mw *MainWindow) runCopyMove(entries []model.Entry, source model.Session, destinationPrefix string, move bool, policy explorer.ConflictPolicy) {
 	client, err := mw.clientFor(source.Account)
 	if err != nil {
-		mw.showError("Copy/move", err)
+		mw.reportError("Could not copy", err)
 		return
 	}
-	destinationPrefix = strings.Trim(strings.TrimSpace(destinationPrefix), "/")
+	destinationPrefix = strings.Trim(strings.TrimSpace(strings.ReplaceAll(destinationPrefix, "\\", "/")), "/")
 	if destinationPrefix != "" {
 		destinationPrefix += "/"
 	}
@@ -465,8 +529,8 @@ func (mw *MainWindow) runCopyMove(entries []model.Entry, source model.Session, d
 	if move {
 		verb = "Moving"
 	}
-	label := fmt.Sprintf("%s %d item%s", verb, len(entries), plural(len(entries)))
-	mw.runOperation(label, source, func(ctx context.Context, progress explorer.Progress) error {
+	label := fmt.Sprintf("%s %s", verb, countNoun(len(entries), "item"))
+	mw.runOperation(label, source, "", func(ctx context.Context, progress explorer.Progress) error {
 		if move {
 			return explorer.Move(ctx, client, source.Bucket, entries, destinationPrefix, policy, progress)
 		}
@@ -474,8 +538,14 @@ func (mw *MainWindow) runCopyMove(entries []model.Entry, source model.Session, d
 	})
 }
 
-func (mw *MainWindow) runOperation(label string, session model.Session, operation func(context.Context, explorer.Progress) error) {
+// runOperation runs a bucket operation in the background. Progress shows in
+// the status bar and the progress line; a failure shows as a banner. When it
+// finishes, the folder reloads and selectKey (if set) is selected.
+func (mw *MainWindow) runOperation(label string, session model.Session, selectKey string, operation func(context.Context, explorer.Progress) error) {
 	mw.status.SetMessage(label + "…")
+	mw.progress.Begin()
+	mw.operations++
+	mw.updateStatusState()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
@@ -486,23 +556,32 @@ func (mw *MainWindow) runOperation(label string, session model.Session, operatio
 			}
 			lastUpdate = time.Now()
 			fyne.Do(func() {
-				mw.status.SetMessage(fmt.Sprintf("%s - %d/%d", label, done, total))
+				mw.status.SetMessage(fmt.Sprintf("%s · %s of %s", label, formatCount(done), formatCount(total)))
 			})
 		})
 		fyne.Do(func() {
+			mw.progress.End()
+			mw.operations--
+			mw.updateStatusState()
 			if err != nil {
-				mw.showError(label, err)
-				mw.notify("R2 operation failed", label+": "+err.Error())
-				return
+				mw.reportError(label+" failed", err)
+				mw.notify("R2 operation failed", label)
+			} else {
+				mw.status.SetMessage(label + " · done")
 			}
-			mw.status.SetMessage(label + " - done")
-			mw.notify("R2 operation complete", label)
-			if mw.currentSession().Account == session.Account && mw.currentSession().Bucket == session.Bucket {
+			current := mw.currentSession()
+			if current.Account == session.Account && current.Bucket == session.Bucket {
+				if selectKey != "" {
+					mw.browser.selected = map[string]struct{}{selectKey: {}}
+					mw.browser.focusKey = selectKey
+				}
 				mw.browser.Reload()
 			}
 		})
 	}()
 }
+
+// ---------------------------------------------------------------- open and links
 
 func (mw *MainWindow) openEntry(entry model.Entry) {
 	if entry.IsDir {
@@ -512,14 +591,18 @@ func (mw *MainWindow) openEntry(entry model.Entry) {
 	session := mw.currentSession()
 	client, err := mw.clientFor(session.Account)
 	if err != nil {
-		mw.showError("Open", err)
+		mw.reportError("Could not open "+entry.Name, err)
 		return
 	}
 	mw.status.SetMessage("Opening " + entry.Name + "…")
+	mw.progress.Begin()
 	go func() {
 		cacheRoot, tempErr := os.MkdirTemp("", "r2go-open-*")
 		if tempErr != nil {
-			fyne.Do(func() { mw.showError("Open "+entry.Name, tempErr) })
+			fyne.Do(func() {
+				mw.progress.End()
+				mw.reportError("Could not open "+entry.Name, tempErr)
+			})
 			return
 		}
 		// Do not delete this temp directory immediately after launching the file:
@@ -533,8 +616,9 @@ func (mw *MainWindow) openEntry(entry model.Entry) {
 			err = util.Open(destination)
 		}
 		fyne.Do(func() {
+			mw.progress.End()
 			if err != nil {
-				mw.showError("Open "+entry.Name, err)
+				mw.reportError("Could not open "+entry.Name, err)
 				return
 			}
 			mw.status.SetMessage("Opened " + entry.Name)
@@ -558,9 +642,25 @@ func (mw *MainWindow) copySelectedPublicURL() {
 		mw.showPublicDomainDialog()
 		return
 	}
-	value := publicURL(domain, entry.Key)
-	mw.win.Clipboard().SetContent(value)
-	mw.status.SetMessage("Public URL copied")
+	mw.win.Clipboard().SetContent(publicURL(domain, entry.Key))
+	mw.status.SetMessage("Copied the public URL for " + entry.Name)
+}
+
+func (mw *MainWindow) copySelectedKeys() {
+	entries := mw.browser.SelectedEntries()
+	if len(entries) == 0 {
+		return
+	}
+	keys := make([]string, len(entries))
+	for i, entry := range entries {
+		keys[i] = entry.Key
+	}
+	mw.win.Clipboard().SetContent(strings.Join(keys, "\n"))
+	if len(keys) == 1 {
+		mw.status.SetMessage("Copied the key")
+	} else {
+		mw.status.SetMessage(fmt.Sprintf("Copied %s", countNoun(len(keys), "key")))
+	}
 }
 
 func (mw *MainWindow) openPublicURL(entry model.Entry) {
@@ -570,55 +670,56 @@ func (mw *MainWindow) openPublicURL(entry model.Entry) {
 		return
 	}
 	if err := util.Open(publicURL(domain, entry.Key)); err != nil {
-		mw.showError("Open public URL", err)
+		mw.reportError("Could not open the link", err)
 	}
 }
+
+// ---------------------------------------------------------------- context menu
 
 func (mw *MainWindow) showContextMenu(entries []model.Entry, position fyne.Position) {
 	if len(entries) == 0 {
 		return
 	}
 	if len(entries) > 1 {
-		menu := fyne.NewMenu("Selection",
-			fyne.NewMenuItemWithIcon("Download", fyneTheme.Icon(fyneTheme.IconNameDownload), func() { mw.downloadEntries(entries) }),
-			fyne.NewMenuItemWithIcon("Copy to…", fyneTheme.Icon(fyneTheme.IconNameContentCopy), func() { mw.showCopyMoveDialog(entries, false) }),
-			fyne.NewMenuItemWithIcon("Move to…", fyneTheme.Icon(fyneTheme.IconNameContentCut), func() { mw.showCopyMoveDialog(entries, true) }),
-			fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItemWithIcon("Delete", fyneTheme.Icon(fyneTheme.IconNameDelete), mw.deleteSelected),
+		showMenu(mw.win, position,
+			menuItem{label: "Download " + countNoun(len(entries), "item"), icon: t.IconDownload, action: func() { mw.downloadEntries(entries) }},
+			menuItem{label: "Copy keys", icon: t.IconCopy, action: mw.copySelectedKeys},
+			menuSeparator,
+			menuItem{label: "Copy to…", icon: t.IconCopy, action: func() { mw.showCopyMoveDialog(entries, false) }},
+			menuItem{label: "Move to…", icon: t.IconMove, action: func() { mw.showCopyMoveDialog(entries, true) }},
+			menuSeparator,
+			menuItem{label: "Delete…", icon: t.IconTrash, danger: true, action: mw.deleteSelected},
 		)
-		widget.NewPopUpMenu(menu, mw.win.Canvas()).ShowAtPosition(position)
 		return
 	}
 
 	entry := entries[0]
-	openIcon := entryIcon(entry)
-	openLabel := "Open"
+	items := []menuItem{}
 	if entry.IsDir {
-		openLabel = "Open folder"
-		openIcon = fyneTheme.Icon(fyneTheme.IconNameFolderOpen)
+		items = append(items, menuItem{label: "Open", icon: t.IconFolderOpen, action: func() { mw.openEntry(entry) }})
+	} else {
+		items = append(items, menuItem{label: "Open", icon: t.IconExternal, action: func() { mw.openEntry(entry) }})
 	}
-	items := []*fyne.MenuItem{
-		fyne.NewMenuItemWithIcon(openLabel, openIcon, func() { mw.openEntry(entry) }),
-		fyne.NewMenuItemWithIcon("Download", fyneTheme.Icon(fyneTheme.IconNameDownload), func() { mw.downloadEntries(entries) }),
-	}
+	items = append(items, menuItem{label: "Download", icon: t.IconDownload, action: func() { mw.downloadEntries(entries) }})
+	items = append(items, menuSeparator, menuItem{label: "Copy key", icon: t.IconCopy, action: mw.copySelectedKeys})
 	if !entry.IsDir {
-		domain := mw.cfg.PublicDomain(mw.currentSession().Account, mw.currentSession().Bucket)
-		if domain != "" {
+		session := mw.currentSession()
+		if mw.cfg.PublicDomain(session.Account, session.Bucket) != "" {
 			items = append(items,
-				fyne.NewMenuItemWithIcon("Copy public URL", fyneTheme.Icon(fyneTheme.IconNameContentCopy), mw.copySelectedPublicURL),
-				fyne.NewMenuItemWithIcon("Open public URL", fyneTheme.Icon(fyneTheme.IconNameComputer), func() { mw.openPublicURL(entry) }),
+				menuItem{label: "Copy public URL", icon: t.IconLink, action: mw.copySelectedPublicURL},
+				menuItem{label: "Open public URL", icon: t.IconGlobe, action: func() { mw.openPublicURL(entry) }},
 			)
 		} else {
-			items = append(items, fyne.NewMenuItemWithIcon("Configure public URL…", fyneTheme.Icon(fyneTheme.IconNameSettings), mw.showPublicDomainDialog))
+			items = append(items, menuItem{label: "Set up public URL…", icon: t.IconGlobe, action: mw.showPublicDomainDialog})
 		}
 	}
 	items = append(items,
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItemWithIcon("Copy to…", fyneTheme.Icon(fyneTheme.IconNameContentCopy), func() { mw.showCopyMoveDialog(entries, false) }),
-		fyne.NewMenuItemWithIcon("Move to…", fyneTheme.Icon(fyneTheme.IconNameContentCut), func() { mw.showCopyMoveDialog(entries, true) }),
-		fyne.NewMenuItemWithIcon("Rename", fyneTheme.Icon(fyneTheme.IconNameDocumentCreate), mw.renameSelected),
-		fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItemWithIcon("Delete", fyneTheme.Icon(fyneTheme.IconNameDelete), mw.deleteSelected),
+		menuSeparator,
+		menuItem{label: "Rename…", icon: t.IconPencil, action: mw.renameSelected},
+		menuItem{label: "Copy to…", icon: t.IconCopy, action: func() { mw.showCopyMoveDialog(entries, false) }},
+		menuItem{label: "Move to…", icon: t.IconMove, action: func() { mw.showCopyMoveDialog(entries, true) }},
+		menuSeparator,
+		menuItem{label: "Delete…", icon: t.IconTrash, danger: true, action: mw.deleteSelected},
 	)
-	widget.NewPopUpMenu(fyne.NewMenu(entry.Name, items...), mw.win.Canvas()).ShowAtPosition(position)
+	showMenu(mw.win, position, items...)
 }
