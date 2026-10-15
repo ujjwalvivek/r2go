@@ -15,6 +15,7 @@ type Entry struct {
 	Size       int64
 	Modified   time.Time
 	ETag       string
+	Count      int // objects under a folder, once its stats are known
 	StatsKnown bool
 	StatsError bool
 }

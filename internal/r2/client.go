@@ -344,3 +344,54 @@ func (c *Client) DownloadFile(ctx context.Context, bucket, key, destination stri
 	removePartial = false
 	return nil
 }
+
+// ObjectInfo is an object's metadata, as returned by a HEAD request.
+type ObjectInfo struct {
+	Key          string
+	Size         int64
+	Modified     time.Time
+	ETag         string
+	ContentType  string
+	CacheControl string
+	Metadata     map[string]string
+}
+
+func (c *Client) Head(ctx context.Context, bucket, key string) (ObjectInfo, error) {
+	out, err := c.svc.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("inspect %s: %w", key, err)
+	}
+	info := ObjectInfo{
+		Key:          key,
+		Size:         aws.ToInt64(out.ContentLength),
+		ETag:         aws.ToString(out.ETag),
+		ContentType:  aws.ToString(out.ContentType),
+		CacheControl: aws.ToString(out.CacheControl),
+		Metadata:     out.Metadata,
+	}
+	if out.LastModified != nil {
+		info.Modified = *out.LastModified
+	}
+	return info, nil
+}
+
+// ReadObject reads a whole object into memory, refusing objects larger than
+// limit bytes. It is meant for small files such as image previews.
+func (c *Client) ReadObject(ctx context.Context, bucket, key string, limit int64) ([]byte, error) {
+	out, err := c.svc.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", key, err)
+	}
+	defer out.Body.Close()
+	if size := aws.ToInt64(out.ContentLength); size > limit {
+		return nil, fmt.Errorf("read %s: %d bytes is over the %d byte limit", key, size, limit)
+	}
+	data, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", key, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("read %s: over the %d byte limit", key, limit)
+	}
+	return data, nil
+}

@@ -3,37 +3,48 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	fyneTheme "fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 
 	"r2go/internal/model"
 	"r2go/internal/r2"
-	r2theme "r2go/internal/theme"
+	t "r2go/internal/theme"
 )
 
-type Browser struct {
-	mw          *MainWindow
-	Container   fyne.CanvasObject
-	table       *FileTable
-	loadMore    *widget.Button
-	loadMoreBar fyne.CanvasObject
+const (
+	viewList = "list"
+	viewGrid = "grid"
+)
 
-	list        fyne.CanvasObject
-	loading     fyne.CanvasObject
-	placeholder fyne.CanvasObject
-	empty       fyne.CanvasObject
+// Browser lists one folder of one bucket, as a table or a grid, and owns the
+// selection.
+type Browser struct {
+	mw        *MainWindow
+	Container fyne.CanvasObject
+
+	table    *FileTable
+	grid     *GridView
+	views    *fyne.Container
+	notice   *fyne.Container
+	banner   *banner
+	moreBar  fyne.CanvasObject
+	moreText *textView
+	more     *button
+	view     string
 
 	session     model.Session
 	all         []model.Entry
 	visible     []model.Entry
+	maxSize     int64
 	nextToken   string
 	hasMore     bool
 	busy        bool
+	loaded      bool
+	loadErr     error
 	generation  uint64
 	loadCancel  context.CancelFunc
 	statsCtx    context.Context
@@ -49,171 +60,190 @@ type Browser struct {
 	anchorKey string
 	hoverKey  string
 
+	previewsDue  bool
 	lastClickKey string
 	lastClickAt  time.Time
+	now          time.Time
 }
 
 func NewBrowser(mw *MainWindow) *Browser {
-	browser := &Browser{
+	b := &Browser{
 		mw:          mw,
 		selected:    map[string]struct{}{},
 		sort:        model.SortState{Field: model.SortName},
 		statsSem:    make(chan struct{}, 3),
 		statsQueued: map[string]struct{}{},
+		view:        viewList,
+		now:         time.Now(),
 	}
-	browser.resetFolderStats()
-	browser.table = NewFileTable(
-		func() int { return len(browser.visible) },
+	b.resetFolderStats()
+	b.table = NewFileTable(
+		func() int { return len(b.visible) },
 		func() fyne.CanvasObject { return newFileRow() },
-		browser.updateRow,
-		browser.sortColumn,
+		b.updateRow,
+		b.sortColumn,
 	)
-	browser.table.SetSort(0, false)
+	b.table.SetSort(model.SortName, false)
+	b.grid = NewGridView(
+		func() int { return len(b.visible) },
+		func() fyne.CanvasObject { return newGridTile() },
+		b.updateTile,
+	)
 
-	browser.loadMore = widget.NewButton("Load more", browser.LoadMore)
-	browser.loadMore.Importance = widget.LowImportance
-	browser.loadMore.Hide()
-	browser.loadMoreBar = panel(r2theme.ColorSurface, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, container.NewCenter(browser.loadMore)))
-	browser.loadMoreBar.Hide()
-	browser.list = container.NewBorder(nil, browser.loadMoreBar, nil, nil, browser.table)
+	b.moreText = newTextView("", t.TextSmall, t.ColorMuted, styleNormal)
+	b.more = newButton(buttonGhost, "Load more", "", b.LoadMore)
+	b.moreBar = panelBox(t.ColorBase, container.NewBorder(hRule(t.ColorBorder), nil, nil, nil,
+		inset(t.SpaceCardX, 4, t.SpaceCardX, 4, container.NewBorder(nil, nil, b.moreText, b.more))))
+	b.moreBar.Hide()
 
-	spinner := widget.NewProgressBarInfinite()
-	spinner.Start()
-	loadingText := widget.NewLabelWithStyle("Loading objects", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	loadingText.SizeName = fyneTheme.SizeNameText
-	loadingHint := mutedLabel("Cloudflare R2")
-	loadingHint.Alignment = fyne.TextAlignCenter
-	loadingBody := container.NewVBox(loadingText, fixedSize(180, 4, spinner), loadingHint)
-	browser.loading = panel(r2theme.ColorSurface, container.NewCenter(loadingBody))
-
-	placeholderIcon := widget.NewIcon(fyneTheme.Icon(fyneTheme.IconNameStorage))
-	placeholderIcon.Resize(fyne.NewSize(42, 42))
-	placeholderTitle := widget.NewLabelWithStyle("Choose a bucket", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	placeholderHint := mutedLabel("Select a bucket from the sidebar to start browsing.")
-	placeholderHint.Alignment = fyne.TextAlignCenter
-	browser.placeholder = panel(r2theme.ColorSurface, container.NewCenter(container.NewVBox(placeholderIcon, placeholderTitle, placeholderHint)))
-
-	emptyIcon := widget.NewIcon(fyneTheme.Icon(fyneTheme.IconNameFolder))
-	emptyIcon.Resize(fyne.NewSize(38, 38))
-	emptyTitle := widget.NewLabelWithStyle("This folder is empty", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	emptyHint := mutedLabel("Drop files here or use Upload.")
-	emptyHint.Alignment = fyne.TextAlignCenter
-	browser.empty = panel(r2theme.ColorSurface, container.NewCenter(container.NewVBox(emptyIcon, emptyTitle, emptyHint)))
-
-	browser.Container = container.NewStack(browser.list, browser.loading, browser.empty, browser.placeholder)
-	browser.showPlaceholder()
-	return browser
+	b.banner = newBanner()
+	b.notice = container.NewStack()
+	b.views = container.NewStack(b.table, b.grid.grid)
+	b.grid.grid.Hide()
+	body := container.NewBorder(b.banner.Container, b.moreBar, nil, nil, container.NewStack(b.views, b.notice))
+	b.Container = panelBox(t.ColorBase, body)
+	b.render()
+	return b
 }
+
+// ---------------------------------------------------------------- rows and tiles
 
 func (b *Browser) updateRow(rowID int, object fyne.CanvasObject) {
 	row := object.(*fileRow)
 	row.row = rowID
-	row.SetWidths(b.table.Widths())
-	row.onClick = b.onCellClick
-	row.onMenu = b.onCellMenu
-	row.onHover = b.onCellHover
-
+	row.onClick = b.onItemClick
+	row.onMenu = b.onItemMenu
+	row.onHover = b.onItemHover
 	if rowID < 0 || rowID >= len(b.visible) {
-		row.name.SetText("")
-		row.size.SetText("")
-		row.modified.SetText("")
-		row.icon.SetResource(nil)
+		row.Set(model.Entry{}, b.table.Widths(), 0, b.now)
 		row.SetState(false, false)
 		return
 	}
 	entry := b.visible[rowID]
-	row.icon.SetResource(entryIcon(entry))
-	row.name.SetText(entry.Name)
-	row.name.TextStyle = fyne.TextStyle{}
-	if entry.IsDir {
-		row.name.TextStyle = fyne.TextStyle{Bold: true}
-	}
-	row.size.Importance = widget.MediumImportance
-	row.modified.Importance = widget.MediumImportance
-
-	if entry.IsDir && !entry.StatsKnown {
-		if entry.StatsError {
-			row.size.SetText(">")
-			row.modified.SetText(">")
-		} else {
-			row.size.SetText("…")
-			row.modified.SetText("…")
-		}
-		row.size.Importance = widget.LowImportance
-		row.modified.Importance = widget.LowImportance
-	} else {
-		row.size.SetText(formatSize(entry.Size))
-		if entry.Modified.IsZero() {
-			row.modified.SetText(">")
-			row.modified.Importance = widget.LowImportance
-		} else {
-			row.modified.SetText(entry.Modified.Local().Format("02 Jan 2006  15:04"))
-		}
-	}
+	row.Set(entry, b.table.Widths(), b.maxSize, b.now)
 	_, selected := b.selected[entry.Key]
 	row.SetState(selected, b.hoverKey == entry.Key)
 }
+
+func (b *Browser) updateTile(id int, object fyne.CanvasObject) {
+	tile := object.(*gridTile)
+	tile.row = id
+	tile.onClick = b.onItemClick
+	tile.onMenu = b.onItemMenu
+	tile.onHover = b.onItemHover
+	if id < 0 || id >= len(b.visible) {
+		tile.Set(model.Entry{}, "", nil)
+		tile.SetState(false, false)
+		return
+	}
+	entry := b.visible[id]
+	tile.Set(entry, entry.Key, b.preview(entry))
+	_, selected := b.selected[entry.Key]
+	tile.SetState(selected, b.hoverKey == entry.Key)
+}
+
+// preview returns the entry's thumbnail if it is ready, and otherwise asks
+// for it and refreshes the tile once it arrives.
+func (b *Browser) preview(entry model.Entry) image.Image {
+	if b.mw.cfg.Settings().NoThumbnails || !previewable(entry) {
+		return nil
+	}
+	client, err := b.mw.clientFor(b.session.Account)
+	if err != nil {
+		return nil
+	}
+	session := b.session
+	return b.mw.thumbs.Get(client, session, entry, func(image.Image) {
+		if b.session == session {
+			b.previewArrived(entry)
+		}
+	})
+}
+
+// previewArrived batches thumbnails that finish close together into one
+// refresh, so a folder full of images does not redraw once per file.
+func (b *Browser) previewArrived(entry model.Entry) {
+	b.mw.details.previewReady(entry)
+	if b.previewsDue {
+		return
+	}
+	b.previewsDue = true
+	generation := b.generation
+	time.AfterFunc(120*time.Millisecond, func() {
+		fyne.Do(func() {
+			b.previewsDue = false
+			if b.generation == generation && b.view == viewGrid {
+				b.grid.RefreshList()
+			}
+		})
+	})
+}
+
+// ---------------------------------------------------------------- loading
 
 func (b *Browser) cancelLoad() {
 	if b.loadCancel != nil {
 		b.loadCancel()
 		b.loadCancel = nil
 	}
-	b.busy = false
+	if b.busy {
+		b.busy = false
+		b.mw.progress.End()
+	}
+}
+
+func (b *Browser) reset() {
+	b.cancelLoad()
+	b.resetFolderStats()
+	b.mw.thumbs.Reset()
+	b.generation++
+	b.all = nil
+	b.visible = nil
+	b.maxSize = 0
+	b.nextToken = ""
+	b.hasMore = false
+	b.loaded = false
+	b.loadErr = nil
+	b.banner.Hide()
+	b.ClearSelection()
 }
 
 func (b *Browser) SetSession(session model.Session) {
-	b.cancelLoad()
-	b.resetFolderStats()
-	b.generation++
+	b.reset()
 	b.session = session
-	b.all = nil
-	b.visible = nil
-	b.nextToken = ""
-	b.hasMore = false
 	b.filter = ""
 	b.sort = model.SortState{Field: model.SortName}
-	b.table.SetSort(0, false)
-	b.ClearSelection()
+	b.table.SetSort(model.SortName, false)
 	if session.Bucket == "" {
-		b.showPlaceholder()
+		b.render()
 		return
 	}
-	b.reload()
+	b.loadPage("")
 }
 
 func (b *Browser) Navigate(prefix string) {
 	if b.session.Bucket == "" {
 		return
 	}
-	b.cancelLoad()
-	b.resetFolderStats()
-	b.generation++
+	b.reset()
 	b.session.Prefix = prefix
-	b.all = nil
-	b.visible = nil
-	b.nextToken = ""
-	b.hasMore = false
-	b.ClearSelection()
-	b.reload()
+	b.filter = ""
+	b.loadPage("")
 }
 
 func (b *Browser) Reload() {
 	if b.session.Bucket == "" {
 		return
 	}
-	b.cancelLoad()
-	b.resetFolderStats()
-	b.generation++
-	b.all = nil
-	b.visible = nil
-	b.nextToken = ""
-	b.hasMore = false
-	b.ClearSelection()
-	b.reload()
+	// Keep the selection by key across a reload, so refreshing after an
+	// operation does not lose the user's place.
+	keep := b.selected
+	focus := b.focusKey
+	b.reset()
+	b.selected = keep
+	b.focusKey = focus
+	b.loadPage("")
 }
-
-func (b *Browser) reload() { b.loadPage("") }
 
 func (b *Browser) LoadMore() {
 	if b.busy || !b.hasMore || b.nextToken == "" {
@@ -227,17 +257,14 @@ func (b *Browser) loadPage(token string) {
 		return
 	}
 	b.busy = true
-	initial := token == ""
-	if initial {
-		b.showLoading()
-	}
-	b.loadMore.Disable()
+	b.mw.progress.Begin()
+	b.more.Disable()
+	b.render()
 
 	session := b.session
 	generation := b.generation
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	b.loadCancel = cancel
-	b.mw.status.SetMessage("Loading " + session.Bucket + "/" + session.Prefix + "…")
 	go func() {
 		defer cancel()
 		client, err := b.mw.clientFor(session.Account)
@@ -251,19 +278,30 @@ func (b *Browser) loadPage(token string) {
 			}
 			b.loadCancel = nil
 			b.busy = false
-			b.loadMore.Enable()
+			b.mw.progress.End()
+			b.more.Enable()
 			if err != nil {
-				b.showList()
-				b.mw.showError("Could not load objects", err)
+				b.loadErr = err
+				e := explainError(err)
+				b.banner.Show(toneError, e.Title, e.Detail,
+					newButton(buttonGhost, "Try again", t.IconRefresh, b.Reload),
+				)
+				b.mw.status.SetFailure(e)
+				b.render()
 				return
 			}
+			b.loadErr = nil
+			b.banner.Hide()
+			b.loaded = true
 			entries := pageEntries(page, session.Prefix)
 			b.all = append(b.all, entries...)
 			b.nextToken = page.NextToken
 			b.hasMore = page.Truncated
-			b.applyView(false)
+			b.applyView()
+			if token == "" {
+				b.scrollToFocus()
+			}
 			b.queueFolderStats(entries, session, generation)
-			b.mw.status.SetMessage(fmt.Sprintf("Loaded %d item%s", len(b.all), plural(len(b.all))))
 		})
 	}()
 }
@@ -295,10 +333,9 @@ func (b *Browser) resetFolderStats() {
 	b.statsQueued = map[string]struct{}{}
 }
 
+// queueFolderStats counts each folder's objects, size and newest change in
+// the background, three folders at a time.
 func (b *Browser) queueFolderStats(entries []model.Entry, session model.Session, generation uint64) {
-	if b.statsCtx == nil {
-		b.resetFolderStats()
-	}
 	ctx := b.statsCtx
 	for _, entry := range entries {
 		if !entry.IsDir {
@@ -316,21 +353,23 @@ func (b *Browser) queueFolderStats(entries []model.Entry, session model.Session,
 			case <-ctx.Done():
 				return
 			}
-
 			statCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()
 			client, err := b.mw.clientFor(session.Account)
 			var size int64
+			var count int
 			var modified time.Time
 			if err == nil {
 				var objects []r2.Object
 				objects, err = client.ListAll(statCtx, session.Bucket, entry.Key)
-				if err == nil {
-					for _, object := range objects {
-						size += object.Size
-						if object.Modified.After(modified) {
-							modified = object.Modified
-						}
+				for _, object := range objects {
+					if strings.HasSuffix(object.Key, "/") && object.Size == 0 {
+						continue
+					}
+					count++
+					size += object.Size
+					if object.Modified.After(modified) {
+						modified = object.Modified
 					}
 				}
 			}
@@ -338,14 +377,14 @@ func (b *Browser) queueFolderStats(entries []model.Entry, session model.Session,
 				if generation != b.generation || session != b.session {
 					return
 				}
-				b.applyFolderStats(entry.Key, size, modified, err)
+				b.applyFolderStats(entry.Key, size, count, modified, err)
 			})
 		}()
 	}
 }
 
-func (b *Browser) applyFolderStats(key string, size int64, modified time.Time, err error) {
-	update := func(entries []model.Entry) bool {
+func (b *Browser) applyFolderStats(key string, size int64, count int, modified time.Time, err error) {
+	update := func(entries []model.Entry) {
 		for i := range entries {
 			if entries[i].Key != key {
 				continue
@@ -354,20 +393,30 @@ func (b *Browser) applyFolderStats(key string, size int64, modified time.Time, e
 			entries[i].StatsError = err != nil
 			if err == nil {
 				entries[i].Size = size
+				entries[i].Count = count
 				entries[i].Modified = modified
 			}
-			return true
+			return
 		}
-		return false
 	}
 	update(b.all)
 	update(b.visible)
-	if b.sort.Field == model.SortSize || b.sort.Field == model.SortModified {
-		b.applyView(false)
-		return
+	if size > b.maxSize {
+		b.maxSize = size
+		b.refreshAll()
 	}
-	b.refreshKey(key)
+	if b.sort.Field == model.SortSize || b.sort.Field == model.SortModified {
+		b.applyView()
+	} else {
+		b.refreshKey(key)
+	}
+	if _, ok := b.selected[key]; ok || len(b.selected) == 0 {
+		b.mw.selectionChanged()
+	}
+	b.mw.updateTotals()
 }
+
+// ---------------------------------------------------------------- view
 
 func (b *Browser) SetFilter(filter string) {
 	filter = strings.TrimSpace(filter)
@@ -376,55 +425,193 @@ func (b *Browser) SetFilter(filter string) {
 	}
 	b.filter = filter
 	b.ClearSelection()
-	b.applyView(false)
+	b.applyView()
+	b.scrollToTop()
 }
 
 func (b *Browser) sortColumn(column int) {
 	field := model.SortName
 	switch column {
-	case 1:
+	case colSize:
 		field = model.SortSize
-	case 2:
+	case colModified:
 		field = model.SortModified
 	}
 	if b.sort.Field == field {
 		b.sort.Desc = !b.sort.Desc
 	} else {
-		b.sort = model.SortState{Field: field}
+		// Size and age read best biggest and newest first.
+		b.sort = model.SortState{Field: field, Desc: field != model.SortName}
 	}
-	b.table.SetSort(column, b.sort.Desc)
-	b.applyView(false)
+	b.table.SetSort(b.sort.Field, b.sort.Desc)
+	b.applyView()
 }
 
-func (b *Browser) applyView(clearSelection bool) {
-	if clearSelection {
-		b.ClearSelection()
+// SetView switches between the table and the grid.
+func (b *Browser) SetView(view string) {
+	if view != viewGrid {
+		view = viewList
 	}
+	b.view = view
+	if view == viewGrid {
+		b.table.Hide()
+		b.grid.grid.Show()
+	} else {
+		b.grid.grid.Hide()
+		b.table.Show()
+	}
+	b.refreshAll()
+	b.views.Refresh()
+	b.scrollToFocus()
+}
+
+func (b *Browser) applyView() {
+	b.now = time.Now()
 	b.visible = model.FilterAndSort(b.all, b.filter, b.sort)
-	b.table.RefreshRows(len(b.visible))
-	if len(b.visible) == 0 {
-		b.showEmpty()
-	} else {
-		b.showList()
+	b.maxSize = 0
+	for _, entry := range b.visible {
+		if entry.Size > b.maxSize {
+			b.maxSize = entry.Size
+		}
 	}
-	if b.hasMore {
-		b.loadMore.Show()
-		b.loadMoreBar.Show()
-	} else {
-		b.loadMore.Hide()
-		b.loadMoreBar.Hide()
+	// Drop selected keys that are no longer listed.
+	present := make(map[string]struct{}, len(b.visible))
+	for _, entry := range b.visible {
+		present[entry.Key] = struct{}{}
 	}
-	count := fmt.Sprintf("%d item%s", len(b.visible), plural(len(b.visible)))
-	if b.hasMore {
-		count += " · more available"
+	for key := range b.selected {
+		if _, ok := present[key]; !ok {
+			delete(b.selected, key)
+		}
 	}
-	b.mw.status.SetRight(count)
+	b.refreshAll()
+	b.render()
+	b.mw.selectionChanged()
+	b.mw.updateTotals()
 }
 
-func (b *Browser) onCellClick(row int, modifier fyne.KeyModifier) {
-	if b.busy || row < 0 || row >= len(b.visible) {
+func (b *Browser) refreshAll() {
+	if b.view == viewGrid {
+		b.grid.RefreshList()
+	} else {
+		b.table.RefreshList()
+	}
+}
+
+func (b *Browser) refreshKey(key string) {
+	if key == "" {
 		return
 	}
+	for row, entry := range b.visible {
+		if entry.Key != key {
+			continue
+		}
+		if b.view == viewGrid {
+			b.grid.RefreshItem(row)
+		} else {
+			b.table.RefreshRow(row)
+		}
+		return
+	}
+}
+
+func (b *Browser) scrollTo(row int) {
+	if b.view == viewGrid {
+		b.grid.ScrollTo(row)
+	} else {
+		b.table.ScrollToRow(row)
+	}
+}
+
+func (b *Browser) scrollToTop() {
+	if b.view == viewGrid {
+		b.grid.ScrollToTop()
+	} else {
+		b.table.ScrollToTop()
+	}
+}
+
+func (b *Browser) scrollToFocus() {
+	for i, entry := range b.visible {
+		if entry.Key == b.focusKey {
+			b.scrollTo(i)
+			return
+		}
+	}
+}
+
+// render shows the right state for the body: the list, or a centred notice
+// for an empty folder, a filter with no matches, a first load or a failure.
+func (b *Browser) render() {
+	if b.hasMore {
+		b.moreText.SetText(fmt.Sprintf("Showing the first %s items. R2 lists a folder in pages.", formatCount(len(b.all))))
+		b.moreBar.Show()
+	} else {
+		b.moreBar.Hide()
+	}
+
+	var notice fyne.CanvasObject
+	switch {
+	case b.session.Bucket == "":
+		notice = noticeView(t.IconBucket, "Choose a bucket", "Pick a bucket in the sidebar, or press Ctrl+K to jump to one.")
+	case !b.loaded && b.busy:
+		notice = noticeView("", "Loading…", "")
+	case !b.loaded && b.loadErr != nil:
+		notice = noticeView(t.IconAlert, "This folder could not be listed", "See the message above.")
+	case b.loaded && len(b.all) == 0:
+		notice = noticeView(t.IconFolderOpen, "This folder is empty", "Drop files on the window, or use Upload.")
+	case b.loaded && len(b.visible) == 0:
+		clear := newButton(buttonGhost, "Clear filter", t.IconClose, func() { b.mw.toolbar.SetSearchText("") })
+		notice = noticeView(t.IconSearch, "Nothing matches", fmt.Sprintf("No item in this folder has “%s” in its name.", b.filter), clear)
+	}
+	if notice == nil {
+		b.notice.Objects = nil
+		b.notice.Hide()
+		b.views.Show()
+	} else {
+		b.notice.Objects = []fyne.CanvasObject{notice}
+		b.notice.Show()
+		// The table keeps its header for an empty folder, so the page does not
+		// jump when items arrive.
+		if b.session.Bucket == "" || b.view == viewGrid {
+			b.views.Hide()
+		} else {
+			b.views.Show()
+		}
+	}
+	b.notice.Refresh()
+	if container, ok := b.Container.(*fyne.Container); ok {
+		container.Refresh()
+	}
+}
+
+// noticeView is a quiet centred message: an icon, a title, one sentence and
+// optional actions.
+func noticeView(icon, title, detail string, actions ...fyne.CanvasObject) fyne.CanvasObject {
+	objects := []fyne.CanvasObject{}
+	if icon != "" {
+		objects = append(objects, container.NewCenter(newIconSized(icon, t.ColorBorderStrong, 28)), fixed(1, 4, layoutSpacer()))
+	}
+	titleText := newText(title, t.TextMedium, t.ColorSubtle, styleStrong)
+	titleText.Alignment = fyne.TextAlignCenter
+	objects = append(objects, container.NewCenter(titleText))
+	if detail != "" {
+		text := newText(detail, t.TextSmall, t.ColorMuted, styleNormal)
+		objects = append(objects, container.NewCenter(text))
+	}
+	if len(actions) > 0 {
+		objects = append(objects, fixed(1, 6, layoutSpacer()), container.NewCenter(container.New(&rowLayout{gap: 6}, actions...)))
+	}
+	return container.NewCenter(vbox(4, objects...))
+}
+
+// ---------------------------------------------------------------- selection
+
+func (b *Browser) onItemClick(row int, modifier fyne.KeyModifier) {
+	if row < 0 || row >= len(b.visible) {
+		return
+	}
+	b.mw.win.Canvas().Unfocus()
 	entry := b.visible[row]
 	control := modifier&fyne.KeyModifierControl != 0 || modifier&fyne.KeyModifierSuper != 0
 	shift := modifier&fyne.KeyModifierShift != 0
@@ -444,18 +631,18 @@ func (b *Browser) onCellClick(row int, modifier fyne.KeyModifier) {
 	}
 	b.focusKey = entry.Key
 	b.selectionChanged()
-	b.table.RefreshList()
 
 	now := time.Now()
 	double := !control && !shift && b.lastClickKey == entry.Key && now.Sub(b.lastClickAt) <= 450*time.Millisecond
 	b.lastClickKey = entry.Key
 	b.lastClickAt = now
 	if double {
+		b.lastClickKey = ""
 		b.mw.openEntry(entry)
 	}
 }
 
-func (b *Browser) onCellMenu(row int, position fyne.Position) {
+func (b *Browser) onItemMenu(row int, position fyne.Position) {
 	if row < 0 || row >= len(b.visible) {
 		return
 	}
@@ -465,12 +652,11 @@ func (b *Browser) onCellMenu(row int, position fyne.Position) {
 		b.focusKey = entry.Key
 		b.anchorKey = entry.Key
 		b.selectionChanged()
-		b.table.RefreshList()
 	}
 	b.mw.showContextMenu(b.SelectedEntries(), position)
 }
 
-func (b *Browser) onCellHover(row int, hovering bool) {
+func (b *Browser) onItemHover(row int, hovering bool) {
 	if row < 0 || row >= len(b.visible) {
 		return
 	}
@@ -480,20 +666,9 @@ func (b *Browser) onCellHover(row int, hovering bool) {
 	} else if b.hoverKey == b.visible[row].Key {
 		b.hoverKey = ""
 	}
-	b.refreshKey(old)
-	b.refreshKey(b.hoverKey)
-}
-
-func (b *Browser) refreshKey(key string) {
-	if key == "" {
-		return
-	}
-	for row, entry := range b.visible {
-		if entry.Key != key {
-			continue
-		}
-		b.table.RefreshRow(row)
-		return
+	if old != b.hoverKey {
+		b.refreshKey(old)
+		b.refreshKey(b.hoverKey)
 	}
 }
 
@@ -531,16 +706,28 @@ func (b *Browser) SelectAll() {
 		b.anchorKey = b.focusKey
 	}
 	b.selectionChanged()
-	b.table.RefreshList()
 }
 
 func (b *Browser) ClearSelection() {
+	if len(b.selected) == 0 && b.focusKey == "" {
+		return
+	}
 	b.selected = map[string]struct{}{}
 	b.focusKey = ""
 	b.anchorKey = ""
 	b.selectionChanged()
-	if b.table != nil {
-		b.table.RefreshList()
+}
+
+// SelectKey selects one entry by key and scrolls to it.
+func (b *Browser) SelectKey(key string) {
+	for i, entry := range b.visible {
+		if entry.Key == key {
+			b.selected = map[string]struct{}{key: {}}
+			b.focusKey, b.anchorKey = key, key
+			b.selectionChanged()
+			b.scrollTo(i)
+			return
+		}
 	}
 }
 
@@ -565,6 +752,8 @@ func (b *Browser) SelectedEntry() (model.Entry, bool) {
 	return entries[0], true
 }
 
+// MoveFocus moves the selection by delta items; in the grid, up and down move
+// by a row of tiles.
 func (b *Browser) MoveFocus(delta int, extend bool) {
 	if len(b.visible) == 0 {
 		return
@@ -583,13 +772,7 @@ func (b *Browser) MoveFocus(delta int, extend bool) {
 			index = 0
 		}
 	} else {
-		index += delta
-		if index < 0 {
-			index = 0
-		}
-		if index >= len(b.visible) {
-			index = len(b.visible) - 1
-		}
+		index = max(0, min(len(b.visible)-1, index+delta))
 	}
 	key := b.visible[index].Key
 	if extend && b.anchorKey != "" {
@@ -600,8 +783,59 @@ func (b *Browser) MoveFocus(delta int, extend bool) {
 	}
 	b.focusKey = key
 	b.selectionChanged()
-	b.table.RefreshList()
-	b.table.ScrollToRow(index)
+	b.scrollTo(index)
+}
+
+// MoveVertical moves one row in the table or one row of tiles in the grid.
+func (b *Browser) MoveVertical(direction int, extend bool) {
+	step := 1
+	if b.view == viewGrid {
+		step = b.grid.Columns()
+	}
+	b.MoveFocus(direction*step, extend)
+}
+
+// MoveHorizontal moves one tile in the grid; in the table it does nothing.
+func (b *Browser) MoveHorizontal(direction int, extend bool) bool {
+	if b.view != viewGrid {
+		return false
+	}
+	b.MoveFocus(direction, extend)
+	return true
+}
+
+// MoveToEdge jumps to the first or last item.
+func (b *Browser) MoveToEdge(last bool, extend bool) {
+	if len(b.visible) == 0 {
+		return
+	}
+	delta := -len(b.visible)
+	if last {
+		delta = len(b.visible)
+	}
+	b.MoveFocus(delta, extend)
+}
+
+// TypeAhead selects the next item whose name starts with prefix.
+func (b *Browser) TypeAhead(prefix string) {
+	prefix = strings.ToLower(prefix)
+	start := 0
+	for i, entry := range b.visible {
+		if entry.Key == b.focusKey {
+			start = i
+			break
+		}
+	}
+	for offset := 0; offset < len(b.visible); offset++ {
+		i := (start + offset) % len(b.visible)
+		if len(prefix) == 1 && offset == 0 {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(b.visible[i].Name), prefix) {
+			b.SelectKey(b.visible[i].Key)
+			return
+		}
+	}
 }
 
 func (b *Browser) OpenSelected() {
@@ -611,55 +845,28 @@ func (b *Browser) OpenSelected() {
 }
 
 func (b *Browser) selectionChanged() {
-	if b.mw == nil {
-		return
-	}
-	b.mw.selectionChanged(len(b.selected))
-	if len(b.selected) > 0 {
-		b.mw.status.SetRight(fmt.Sprintf("%d selected", len(b.selected)))
-	} else if b.session.Bucket != "" {
-		count := fmt.Sprintf("%d item%s", len(b.visible), plural(len(b.visible)))
-		if b.hasMore {
-			count += " · more available"
-		}
-		b.mw.status.SetRight(count)
-	}
+	b.refreshAll()
+	b.mw.selectionChanged()
 }
 
 func (b *Browser) Session() model.Session { return b.session }
 func (b *Browser) Filter() string         { return b.filter }
 
-func (b *Browser) showPlaceholder() {
-	b.list.Hide()
-	b.loading.Hide()
-	b.empty.Hide()
-	b.placeholder.Show()
-}
-
-func (b *Browser) showLoading() {
-	b.placeholder.Hide()
-	b.empty.Hide()
-	b.list.Hide()
-	b.loading.Show()
-}
-
-func (b *Browser) showEmpty() {
-	b.placeholder.Hide()
-	b.loading.Hide()
-	b.list.Hide()
-	b.empty.Show()
-}
-
-func (b *Browser) showList() {
-	b.placeholder.Hide()
-	b.loading.Hide()
-	b.empty.Hide()
-	b.list.Show()
-}
-
-func plural(count int) string {
-	if count == 1 {
+// Totals summarises the listed folder for the status bar.
+func (b *Browser) Totals() string {
+	if b.session.Bucket == "" || !b.loaded {
 		return ""
 	}
-	return "s"
+	var size int64
+	for _, entry := range b.visible {
+		size += entry.Size
+	}
+	text := countNoun(len(b.visible), "item")
+	if b.filter != "" {
+		text = fmt.Sprintf("%s of %s", formatCount(len(b.visible)), countNoun(len(b.all), "item"))
+	}
+	if b.hasMore {
+		text += "+"
+	}
+	return joinDot(text, formatSize(size))
 }
