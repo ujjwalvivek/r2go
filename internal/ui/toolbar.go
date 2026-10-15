@@ -1,150 +1,211 @@
 package ui
 
 import (
-	"fmt"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
-	fyneTheme "fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 
-	r2theme "r2go/internal/theme"
+	t "r2go/internal/theme"
 )
 
+// Toolbar is the 36 px bar above the file list. On the left: back, forward,
+// up and the breadcrumb (which turns into a path field with Ctrl+L). On the
+// right: the filter, view toggles, then New folder, Upload, Refresh and
+// Settings. It never changes shape; selection actions live in the selection
+// strip at the bottom of the list.
 type Toolbar struct {
-	mw             *MainWindow
-	Container      fyne.CanvasObject
-	breadcrumb     *Breadcrumb
-	search         *widget.Entry
-	selectionLabel *widget.Label
-	publicURL      *widget.Button
-	upload         *widget.Button
-	newFolder      *widget.Button
-	normalActions  *fyne.Container
-	selectActions  *fyne.Container
+	mw        *MainWindow
+	Container fyne.CanvasObject
+
+	back, forward, up *button
+	breadcrumb        *Breadcrumb
+	path              *field
+	crumbArea         *fyne.Container
+	editing           bool
+
+	search                    *field
+	browseTools               *fyne.Container
+	right                     *fyne.Container
+	listView, gridView        *button
+	details                   *button
+	newFolder, upload, reload *button
 }
 
 func NewToolbar(mw *MainWindow) *Toolbar {
-	toolbar := &Toolbar{mw: mw}
-	toolbar.breadcrumb = NewBreadcrumb(func(prefix string) { mw.navigate(prefix) })
+	tb := &Toolbar{mw: mw}
+	tb.back = newIconButton(t.IconArrowLeft, "Back  ·  Alt+←", mw.goBack)
+	tb.forward = newIconButton(t.IconArrowRight, "Forward  ·  Alt+→", mw.goForward)
+	tb.up = newIconButton(t.IconArrowUp, "Up one folder  ·  Backspace", mw.goParent)
 
-	toolbar.search = widget.NewEntry()
-	toolbar.search.SetPlaceHolder("Filter files")
-	toolbar.search.SetIcon(fyneTheme.Icon(fyneTheme.IconNameSearch))
-	toolbar.search.OnChanged = func(value string) {
+	tb.breadcrumb = NewBreadcrumb(mw.win, mw.navigate, tb.EditPath)
+	tb.path = newField("folder/subfolder/")
+	tb.path.OnSubmitted = func(value string) { tb.submitPath(value) }
+	tb.path.onEscape = tb.stopEditing
+	tb.path.onBlur = tb.stopEditing
+	tb.path.Hide()
+	tb.crumbArea = container.NewStack(tb.breadcrumb, container.New(&fixedHeightLayout{height: 28}, tb.path))
+
+	tb.search = newField("Filter this folder")
+	tb.search.ActionItem = fieldIcon(t.IconSearch)
+	tb.search.OnChanged = func(value string) {
 		if mw.browser != nil {
 			mw.browser.SetFilter(value)
 		}
 	}
+	tb.search.onEscape = func() {
+		tb.search.SetText("")
+		mw.win.Canvas().Unfocus()
+	}
+	tb.search.onDown = func() {
+		mw.win.Canvas().Unfocus()
+		mw.browser.MoveFocus(1, false)
+	}
 
-	toolbar.newFolder = widget.NewButtonWithIcon("New folder", fyneTheme.Icon(fyneTheme.IconNameContentAdd), mw.newFolder)
-	toolbar.newFolder.Importance = widget.LowImportance
-	toolbar.upload = widget.NewButtonWithIcon("Upload", fyneTheme.Icon(fyneTheme.IconNameUpload), mw.showUploadMenu)
-	toolbar.upload.Importance = widget.HighImportance
-	toolbar.normalActions = container.NewHBox(toolbar.newFolder, toolbar.upload)
+	tb.listView = newIconButton(t.IconList, "List view  ·  Ctrl+1", func() { mw.setView(viewList) })
+	tb.gridView = newIconButton(t.IconGrid, "Grid view  ·  Ctrl+2\nThumbnails for images", func() { mw.setView(viewGrid) })
+	tb.details = newIconButton(t.IconDetails, "Details panel  ·  I\nShow what's selected: size, type, preview and links", mw.toggleDetails)
 
-	toolbar.selectionLabel = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	toolbar.selectionLabel.SizeName = fyneTheme.SizeNameCaptionText
-	download := widget.NewButtonWithIcon("Download", fyneTheme.Icon(fyneTheme.IconNameDownload), mw.downloadSelected)
-	download.Importance = widget.LowImportance
-	copyButton := widget.NewButton("Copy to…", func() { mw.showCopyMoveDialog(mw.browser.SelectedEntries(), false) })
-	copyButton.Importance = widget.LowImportance
-	moveButton := widget.NewButton("Move to…", func() { mw.showCopyMoveDialog(mw.browser.SelectedEntries(), true) })
-	moveButton.Importance = widget.LowImportance
-	deleteButton := widget.NewButton("Delete", mw.deleteSelected)
-	deleteButton.Importance = widget.DangerImportance
-	toolbar.publicURL = widget.NewButton("Copy URL", mw.copySelectedPublicURL)
-	toolbar.publicURL.Importance = widget.LowImportance
-	toolbar.publicURL.Hide()
-	clear := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameContentClear), func() { mw.browser.ClearSelection() })
-	clear.Importance = widget.LowImportance
-	toolbar.selectActions = container.NewHBox(
-		toolbar.selectionLabel,
-		download,
-		copyButton,
-		moveButton,
-		toolbar.publicURL,
-		deleteButton,
-		fixedSize(28, 28, clear),
+	tb.newFolder = newIconButton(t.IconFolderPlus, "New folder  ·  Ctrl+Shift+N", mw.newFolder)
+	tb.reload = newIconButton(t.IconRefresh, "Refresh  ·  F5\nList this folder again", mw.refresh)
+	settings := newIconButton(t.IconSettings, "Settings  ·  Ctrl+,", mw.showSettings)
+	tb.upload = newButton(buttonPrimary, "Upload", t.IconUpload, nil)
+	tb.upload.tip = "Upload  ·  Ctrl+U\nFiles or a whole folder, into this folder. You can also drop them on the window."
+	tb.upload.OnTapped = func() {
+		pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(tb.upload)
+		mw.showUploadMenu(pos.Add(fyne.NewPos(0, tb.upload.Size().Height+2)))
+	}
+
+	nav := container.New(&rowLayout{gap: 0}, tb.back, tb.forward, tb.up)
+	// Browsing tools hide on an account's overview, where they do nothing.
+	tb.browseTools = container.New(&rowLayout{gap: 2},
+		fixed(220, 28, tb.search),
+		spacer(6),
+		tb.listView, tb.gridView, tb.details,
+		divider(),
+		tb.newFolder,
 	)
-	toolbar.selectActions.Hide()
-
-	refresh := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameViewRefresh), mw.refresh)
-	refresh.Importance = widget.LowImportance
-	settings := widget.NewButtonWithIcon("", fyneTheme.Icon(fyneTheme.IconNameSettings), mw.showSettings)
-	settings.Importance = widget.LowImportance
-
-	modeActions := container.NewStack(toolbar.normalActions, toolbar.selectActions)
-	right := container.NewHBox(
-		modeActions,
-		fixedSize(30, 30, refresh),
-		fixedSize(250, 32, toolbar.search),
-		fixedSize(30, 30, settings),
+	right := container.New(&rowLayout{gap: 2},
+		tb.browseTools,
+		tb.reload,
+		spacer(4),
+		tb.upload,
+		spacer(4),
+		settings,
 	)
-	// Breadcrumb owns the flexible center. Keeping selection actions in this
-	// same row makes toolbar height invariant, so the table never slides under
-	// it when selection state changes.
-	topRow := container.NewBorder(nil, nil, nil, right, toolbar.breadcrumb.Container)
-	toolbar.Container = panel(r2theme.ColorToolbar, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, topRow))
-	toolbar.SetEnabled(false)
-	return toolbar
+	tb.right = right
+	row := container.NewBorder(nil, nil, nav, right, inset(8, 0, 12, 0, tb.crumbArea))
+	bar := container.NewBorder(nil, hRule(t.ColorBorder), nil, nil, inset(5, 4, 6, 4, row))
+	tb.Container = minHeight(t.HeightBar, panelBox(t.ColorBase, bar))
+	tb.SetEnabled(false)
+	return tb
 }
 
-func (t *Toolbar) SetPath(bucket, prefix string) {
-	if bucket == "" {
-		t.breadcrumb.Clear()
-		return
-	}
-	t.breadcrumb.Set(bucket, prefix)
+// spacer is fixed empty width in a row.
+func spacer(width float32) fyne.CanvasObject { return fixed(width, 1, layoutSpacer()) }
+
+// divider is a short vertical rule between toolbar groups.
+func divider() fyne.CanvasObject {
+	return inset(6, 0, 6, 0, fixed(1, 16, newRect(t.ColorBorderStrong)))
 }
 
-func (t *Toolbar) SetSearchText(value string) {
-	if t.search.Text != value {
-		t.search.SetText(value)
+func layoutSpacer() fyne.CanvasObject { return container.NewWithoutLayout() }
+
+func (tb *Toolbar) SetPath(bucket, prefix string) {
+	tb.stopEditing()
+	if !tb.browseTools.Visible() {
+		tb.browseTools.Show()
+		tb.upload.Show()
+		tb.reload.SetTip("Refresh  ·  F5\nList this folder again")
+		tb.right.Refresh()
 	}
+	tb.breadcrumb.Set(bucket, prefix)
 }
 
-func (t *Toolbar) SetSelection(count int) {
-	if count <= 0 {
-		t.selectActions.Hide()
-		t.normalActions.Show()
-		if t.Container != nil {
-			t.Container.Refresh()
-		}
-		return
-	}
-	t.selectionLabel.SetText(fmt.Sprintf("%d selected", count))
-	t.normalActions.Hide()
-	t.selectActions.Show()
-	if t.Container != nil {
-		t.Container.Refresh()
-	}
+func (tb *Toolbar) SetOverview(account string) {
+	tb.stopEditing()
+	tb.breadcrumb.SetOverview(account)
+	tb.upload.Hide()
+	tb.browseTools.Hide()
+	tb.reload.Enable()
+	tb.reload.SetTip("Count again  ·  F5\nList every object in this account's buckets again")
+	tb.right.Refresh()
 }
 
-func (t *Toolbar) SetPublicAvailable(available bool) {
-	if available {
-		t.publicURL.Show()
-	} else {
-		t.publicURL.Hide()
+func (tb *Toolbar) SetSearchText(value string) {
+	if tb.search.Text != value {
+		tb.search.SetText(value)
 	}
 }
 
-func (t *Toolbar) SetEnabled(enabled bool) {
+func (tb *Toolbar) SetHistory(canBack, canForward, canUp bool) {
+	tb.back.SetDisabled(!canBack)
+	tb.forward.SetDisabled(!canForward)
+	tb.up.SetDisabled(!canUp)
+}
+
+func (tb *Toolbar) SetView(view string, details bool) {
+	tb.listView.SetActive(view != viewGrid)
+	tb.gridView.SetActive(view == viewGrid)
+	tb.details.SetActive(details)
+}
+
+func (tb *Toolbar) SetEnabled(enabled bool) {
+	for _, b := range []*button{tb.upload, tb.newFolder, tb.reload} {
+		b.SetDisabled(!enabled)
+	}
 	if enabled {
-		t.search.Enable()
-		t.upload.Enable()
-		t.newFolder.Enable()
-		return
+		tb.search.Enable()
+	} else {
+		tb.search.Disable()
+		tb.SetHistory(false, false, false)
 	}
-	t.search.Disable()
-	t.upload.Disable()
-	t.newFolder.Disable()
-	t.publicURL.Hide()
 }
 
-func (t *Toolbar) FocusSearch() {
-	if t.search.Disabled() {
+func (tb *Toolbar) FocusSearch() {
+	if tb.search.Disabled() {
 		return
 	}
-	t.mw.win.Canvas().Focus(t.search)
+	tb.mw.win.Canvas().Focus(tb.search)
+}
+
+// EditPath swaps the breadcrumb for a path field holding the current folder.
+func (tb *Toolbar) EditPath() {
+	session := tb.mw.currentSession()
+	if session.Bucket == "" || tb.editing {
+		return
+	}
+	tb.editing = true
+	tb.breadcrumb.Hide()
+	tb.path.SetText(session.Prefix)
+	tb.path.Show()
+	tb.crumbArea.Refresh()
+	tb.mw.win.Canvas().Focus(tb.path)
+	tb.path.TypedShortcut(&fyne.ShortcutSelectAll{})
+}
+
+func (tb *Toolbar) stopEditing() {
+	if !tb.editing {
+		return
+	}
+	tb.editing = false
+	tb.path.Hide()
+	tb.breadcrumb.Show()
+	tb.crumbArea.Refresh()
+}
+
+func (tb *Toolbar) submitPath(value string) {
+	session := tb.mw.currentSession()
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.TrimPrefix(value, "/")
+	value = strings.TrimPrefix(value, session.Bucket+"/")
+	if value == session.Bucket {
+		value = ""
+	}
+	if value != "" && !strings.HasSuffix(value, "/") {
+		value += "/"
+	}
+	tb.stopEditing()
+	tb.mw.win.Canvas().Unfocus()
+	tb.mw.navigate(value)
 }

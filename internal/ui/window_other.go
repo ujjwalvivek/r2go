@@ -2,8 +2,15 @@
 
 package ui
 
-import "fyne.io/fyne/v2"
+import (
+	"fyne.io/fyne/v2"
+	"github.com/ncruces/zenity"
+)
 
-// squareWindowCorners only has an effect on Windows 11, where DWM rounds
-// window corners. Other platforms already draw square windows.
-func squareWindowCorners(fyne.Window) {}
+// styleNativeWindow only has an effect on Windows, where DWM lets an app
+// colour its title bar and turn off rounded corners.
+func styleNativeWindow(fyne.Window) {}
+
+// nativeParent has nothing to attach outside Windows; zenity's modal hint
+// keeps the picker on top.
+func nativeParent(fyne.Window) []zenity.Option { return nil }
