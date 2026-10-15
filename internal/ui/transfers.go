@@ -47,7 +47,7 @@ func NewTransferPanel(mw *MainWindow, manager *transfer.Manager) *TransferPanel 
 	clear := widget.NewButton("Clear", manager.ClearFinished)
 	clear.Importance = widget.LowImportance
 	header := container.NewBorder(nil, nil, container.NewHBox(title, panelView.count), fixedSize(62, 28, clear))
-	header = container.NewBorder(widget.NewSeparator(), nil, nil, nil, inset(8, 1, 8, 1, header))
+	header = container.NewBorder(widget.NewSeparator(), nil, nil, nil, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, header))
 	panelView.root = tightVBox(header, panelView.content)
 	panelView.Container = panel(r2theme.ColorToolbar, panelView.root)
 	panelView.Container.Hide()
@@ -65,6 +65,7 @@ func NewTransferPanel(mw *MainWindow, manager *transfer.Manager) *TransferPanel 
 
 func (p *TransferPanel) refresh() {
 	groups := aggregateTransfers(p.manager.Snapshot())
+	p.mw.status.SetState(transferStatusState(groups))
 	visible := make([]transferGroup, 0, len(groups))
 	for _, group := range groups {
 		if group.active > 0 || group.failed > 0 || (!group.lastDone.IsZero() && time.Since(group.lastDone) < 6*time.Second) {
@@ -191,7 +192,22 @@ func (p *TransferPanel) groupRow(group transferGroup) fyne.CanvasObject {
 
 	top := container.NewBorder(nil, nil, label, action)
 	body := tightVBox(top, status, progress)
-	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, inset(8, 2, 8, 2, body))
+	return container.NewBorder(nil, widget.NewSeparator(), nil, nil, inset(r2theme.SpaceGap, r2theme.SpaceRowY, r2theme.SpaceGap, r2theme.SpaceRowY, body))
+}
+
+// transferStatusState reports the status bar square. A failure outranks running
+// work because it needs attention; failed groups stay listed until cleared.
+func transferStatusState(groups []transferGroup) StatusState {
+	state := StatusReady
+	for _, group := range groups {
+		if group.failed > 0 {
+			return StatusFailed
+		}
+		if group.active > 0 {
+			state = StatusWorking
+		}
+	}
+	return state
 }
 
 func transferGroupStatus(group transferGroup) string {
