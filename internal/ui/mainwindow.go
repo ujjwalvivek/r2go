@@ -79,6 +79,8 @@ func NewMainWindow(app fyne.App, cfg *config.Manager, theme *r2theme.Theme) fyne
 	mw.win.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
 		mw.handleDrop(uris)
 	})
+	// The native window only exists once the app has started.
+	app.Lifecycle().SetOnStarted(func() { squareWindowCorners(mw.win) })
 	return mw.win
 }
 
