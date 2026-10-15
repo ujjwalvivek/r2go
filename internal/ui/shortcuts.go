@@ -1,114 +1,172 @@
 package ui
 
 import (
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/widget"
-
-	"r2go/internal/model"
 )
 
+// appShortcuts holds the window's modified-key shortcuts by name, so a text
+// field that does not use a shortcut (Ctrl+K in the filter, say) can pass it
+// on instead of swallowing it.
+var appShortcuts = map[string]func(){}
+
+// TypedShortcut lets the field handle editing shortcuts and forwards the
+// app's own.
+func (f *field) TypedShortcut(shortcut fyne.Shortcut) {
+	if custom, ok := shortcut.(*desktop.CustomShortcut); ok {
+		if fn, found := appShortcuts[custom.ShortcutName()]; found {
+			fn()
+			return
+		}
+	}
+	f.Entry.TypedShortcut(shortcut)
+}
+
 func (mw *MainWindow) registerShortcuts() {
-	canvas := mw.win.Canvas()
+	c := mw.win.Canvas()
+	ctrl := fyne.KeyModifierShortcutDefault
+	shift := fyne.KeyModifierShift
+	alt := fyne.KeyModifierAlt
+
+	// idle is true when no dialog is open and no field has focus, so plain
+	// keys belong to the file list.
+	idle := func() bool {
+		return len(c.Overlays().List()) == 0 && c.Focused() == nil
+	}
+	noDialog := func() bool { return len(c.Overlays().List()) == 0 }
 	add := func(key fyne.KeyName, modifier fyne.KeyModifier, fn func()) {
-		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: key, Modifier: modifier}, func(fyne.Shortcut) { fn() })
-	}
-	guard := func() bool {
-		if len(canvas.Overlays().List()) > 0 {
-			return false
+		shortcut := &desktop.CustomShortcut{KeyName: key, Modifier: modifier}
+		run := func() {
+			if noDialog() {
+				fn()
+			}
 		}
-		if _, editing := canvas.Focused().(*widget.Entry); editing {
-			return false
-		}
-		return true
+		appShortcuts[shortcut.ShortcutName()] = run
+		c.AddShortcut(shortcut, func(fyne.Shortcut) { run() })
 	}
 
-	add(fyne.KeyF, fyne.KeyModifierControl, mw.toolbar.FocusSearch)
-	add(fyne.KeyR, fyne.KeyModifierControl, mw.refresh)
-	add(fyne.KeyF5, 0, mw.refresh)
-
-	add(fyne.KeyA, fyne.KeyModifierControl, func() {
-		if guard() {
+	// Ctrl+A/C/X/V reach the canvas as Fyne's standard shortcuts, not custom
+	// ones, and only when no field has focus (a field uses them for text).
+	c.AddShortcut(&fyne.ShortcutSelectAll{}, func(fyne.Shortcut) {
+		if idle() {
 			mw.browser.SelectAll()
 		}
 	})
-	add(fyne.KeyC, fyne.KeyModifierControl, func() {
-		if guard() {
+	c.AddShortcut(&fyne.ShortcutCopy{}, func(fyne.Shortcut) {
+		if idle() {
 			mw.copySelection(false)
 		}
 	})
-	add(fyne.KeyX, fyne.KeyModifierControl, func() {
-		if guard() {
+	c.AddShortcut(&fyne.ShortcutCut{}, func(fyne.Shortcut) {
+		if idle() {
 			mw.copySelection(true)
 		}
 	})
-	add(fyne.KeyV, fyne.KeyModifierControl, func() {
-		if guard() {
+	c.AddShortcut(&fyne.ShortcutPaste{}, func(fyne.Shortcut) {
+		if idle() {
 			mw.pasteClipboard()
 		}
 	})
 
-	add(fyne.KeyF2, 0, func() {
-		if guard() {
-			mw.renameSelected()
-		}
-	})
-	add(fyne.KeyDelete, 0, func() {
-		if guard() {
-			mw.deleteSelected()
-		}
-	})
-	add(fyne.KeyEnter, 0, func() {
-		if guard() {
-			mw.browser.OpenSelected()
-		}
-	})
-	add(fyne.KeyEscape, 0, func() {
-		mw.browser.ClearSelection()
-		canvas.Unfocus()
-	})
+	add(fyne.KeyF, ctrl, mw.toolbar.FocusSearch)
+	add(fyne.KeyL, ctrl, mw.toolbar.EditPath)
+	add(fyne.KeyK, ctrl, mw.showPalette)
+	add(fyne.KeyP, ctrl, mw.showPalette)
+	add(fyne.KeyR, ctrl, mw.refresh)
+	add(fyne.KeyN, ctrl|shift, mw.newFolder)
+	add(fyne.KeyU, ctrl, mw.showUploadMenuAtToolbar)
+	add(fyne.KeyU, ctrl|shift, mw.pickUploadFolder)
+	add(fyne.KeyD, ctrl, mw.downloadSelected)
+	add(fyne.KeyC, ctrl|shift, mw.copySelectedPublicURL)
+	add(fyne.Key1, ctrl, func() { mw.setView(viewList) })
+	add(fyne.Key2, ctrl, func() { mw.setView(viewGrid) })
+	add(fyne.KeyI, ctrl, mw.toggleDetails)
+	add(fyne.KeyComma, ctrl, mw.showSettings)
+	add(fyne.KeyLeft, alt, mw.goBack)
+	add(fyne.KeyRight, alt, mw.goForward)
+	add(fyne.KeyUp, alt, mw.goParent)
 
-	add(fyne.KeyUp, 0, func() {
-		if guard() {
-			mw.browser.MoveFocus(-1, false)
-		}
-	})
-	add(fyne.KeyDown, 0, func() {
-		if guard() {
-			mw.browser.MoveFocus(1, false)
-		}
-	})
-	add(fyne.KeyUp, fyne.KeyModifierShift, func() {
-		if guard() {
-			mw.browser.MoveFocus(-1, true)
-		}
-	})
-	add(fyne.KeyDown, fyne.KeyModifierShift, func() {
-		if guard() {
-			mw.browser.MoveFocus(1, true)
-		}
-	})
-
-	goParent := func() {
-		if !guard() {
+	// Keys without a modifier never become Fyne shortcuts; they arrive here
+	// when no widget has focus.
+	if dc, ok := c.(desktop.Canvas); ok {
+		dc.SetOnKeyDown(func(event *fyne.KeyEvent) {
+			if event.Name == desktop.KeyShiftLeft || event.Name == desktop.KeyShiftRight {
+				mw.shift = true
+			}
+		})
+		dc.SetOnKeyUp(func(event *fyne.KeyEvent) {
+			if event.Name == desktop.KeyShiftLeft || event.Name == desktop.KeyShiftRight {
+				mw.shift = false
+			}
+		})
+	}
+	c.SetOnTypedKey(func(event *fyne.KeyEvent) {
+		if !idle() {
 			return
 		}
-		session := mw.currentSession()
-		if session.Bucket != "" && session.Prefix != "" {
-			mw.navigate(model.ParentPrefix(session.Prefix))
-		}
-	}
-	add(fyne.KeyBackspace, 0, goParent)
-	add(fyne.KeyLeft, fyne.KeyModifierAlt, goParent)
-
-	add(fyne.KeyN, fyne.KeyModifierControl|fyne.KeyModifierShift, func() {
-		if guard() {
-			mw.newFolder()
+		b := mw.browser
+		switch event.Name {
+		case fyne.KeyUp:
+			b.MoveVertical(-1, mw.shift)
+		case fyne.KeyDown:
+			b.MoveVertical(1, mw.shift)
+		case fyne.KeyLeft:
+			b.MoveHorizontal(-1, mw.shift)
+		case fyne.KeyRight:
+			b.MoveHorizontal(1, mw.shift)
+		case fyne.KeyHome:
+			b.MoveToEdge(false, mw.shift)
+		case fyne.KeyEnd:
+			b.MoveToEdge(true, mw.shift)
+		case fyne.KeyPageUp:
+			b.MoveVertical(-12, mw.shift)
+		case fyne.KeyPageDown:
+			b.MoveVertical(12, mw.shift)
+		case fyne.KeyReturn, fyne.KeyEnter:
+			b.OpenSelected()
+		case fyne.KeyDelete:
+			mw.deleteSelected()
+		case fyne.KeyF2:
+			mw.renameSelected()
+		case fyne.KeyF5:
+			mw.refresh()
+		case fyne.KeyF1:
+			mw.showHelp()
+		case fyne.KeyBackspace:
+			mw.goParent()
+		case fyne.KeyEscape:
+			switch {
+			case len(b.selected) > 0:
+				b.ClearSelection()
+			case mw.banner.Visible():
+				mw.banner.Hide()
+				mw.relayout()
+			case b.filter != "":
+				mw.toolbar.SetSearchText("")
+			}
 		}
 	})
-	add(fyne.KeyU, fyne.KeyModifierControl, func() {
-		if guard() {
-			mw.showUploadMenu()
+
+	// Typing a name jumps to it; "?" opens the key list.
+	c.SetOnTypedRune(func(r rune) {
+		if !idle() {
+			return
 		}
+		if r == '?' {
+			mw.showHelp()
+			return
+		}
+		if r == ' ' && mw.typed == "" {
+			return
+		}
+		now := time.Now()
+		if now.Sub(mw.typedAt) > 800*time.Millisecond {
+			mw.typed = ""
+		}
+		mw.typedAt = now
+		mw.typed += string(r)
+		mw.browser.TypeAhead(mw.typed)
 	})
 }
